@@ -659,7 +659,7 @@ private fun SignatureLiveMenuPanel(
     var showCustomCodeDialog by remember { mutableStateOf(false) }
     var customCodeDraft by remember {
         mutableStateOf(
-            SignatureStudioStore.liveMenuCode(context).ifBlank { "*180*5*2*pn#" }
+            SignatureStudioStore.liveMenuCode(context).ifBlank { "*180*2*5*pn#" }
         )
     }
     val issueKey = if (state.hasDiagnosticIssue) {
@@ -682,7 +682,7 @@ private fun SignatureLiveMenuPanel(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Enter a verification template with pn (or 0712345678), e.g. *180*5*2*pn#. Live Menu dials it silently via TelephonyManager.sendUssdRequest().",
+                        "Enter a verification template with pn (or 0712345678), e.g. *180*2*5*pn#. Live Menu dials it silently via TelephonyManager.sendUssdRequest().",
                         color = SignatureStudioColors.t2,
                         fontSize = 12.sp,
                         lineHeight = 17.sp
@@ -692,7 +692,7 @@ private fun SignatureLiveMenuPanel(
                         onValueChange = { customCodeDraft = it },
                         singleLine = true,
                         label = { Text("USSD template") },
-                        placeholder = { Text("*180*5*2*pn#") }
+                        placeholder = { Text("*180*2*5*pn#") }
                     )
                 }
             },
@@ -761,6 +761,7 @@ private fun SignatureLiveMenuPanel(
                                 when {
                                     state.isCarrierRetryLimit -> "Carrier retry limit reached"
                                     state.blockedBecauseRunning -> "Request already running"
+                                    state.isSafaricomServiceError -> "Safaricom error response"
                                     state.lastAttemptOutcome == "CALLBACK SUCCESS · NO PARSED OPTIONS" -> "No numbered menu options found"
                                     state.lastAttemptError.isNotBlank() -> "Live Menu refresh unsuccessful"
                                     else -> "Live Menu diagnostics"
@@ -785,7 +786,11 @@ private fun SignatureLiveMenuPanel(
                         ) {
                             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(
-                                    if (state.isCarrierRetryLimit) "CARRIER RESPONSE EXPLANATION" else "WHAT HAPPENED",
+                                    when {
+                                        state.isSafaricomServiceError -> "SAFARICOM ERROR RESPONSE"
+                                        state.isCarrierRetryLimit -> "CARRIER RESPONSE EXPLANATION"
+                                        else -> "WHAT HAPPENED"
+                                    },
                                     color = accent,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.ExtraBold,
