@@ -59,12 +59,16 @@ internal fun selectLiveMenuSourceOffer(
     }
     if (selected != null) return selected
 
-    // Fall back only to another eligible Simple-mode offer. Advanced offers
-    // must never be used as a silent Live Menu source.
-    return offers.firstOrNull {
+    // Prefer an enabled Safaricom *180 Simple-mode offer as the shared
+    // Live Menu source. Keep the fallback deterministic when no *180 offer
+    // exists, and never select a disabled offer while an enabled one exists.
+    val eligible = offers.filter {
         normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE &&
             SimpleSignatureVerifier.previewCode(it.ussdCode) != null
     }
+    return eligible.firstOrNull {
+        it.enabled && it.ussdCode.trim().startsWith("*180", ignoreCase = true)
+    } ?: eligible.firstOrNull { it.enabled } ?: eligible.firstOrNull()
 }
 
 internal fun redactPreviewPattern(previewCode: String): String {
