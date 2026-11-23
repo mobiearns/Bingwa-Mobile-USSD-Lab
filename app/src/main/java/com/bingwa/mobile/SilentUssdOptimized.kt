@@ -61,7 +61,13 @@ object SilentUssdOptimized {
 
         // Do not repair or rewrite a code at the Android boundary. The caller
         // must provide the exact canonical dial string already validated upstream.
+        val validationStartedAt = UssdPerformanceDiagnostics.mark()
         val code = canonicalSilentUssdDialString(ussdCode)
+        UssdPerformanceDiagnostics.record(
+            "silent.validation",
+            validationStartedAt,
+            "valid=${code != null} codeChars=${ussdCode.length} segments=${ussdCode.count { it == '*' }} unchanged=true"
+        )
         if (code == null) {
             onFailure("USSD code is not canonical. Expected *digits*digits# with no spaces or extra characters.")
             return false
@@ -83,11 +89,28 @@ object SilentUssdOptimized {
             armWatchdog(requestId)
         }
 
-        val launchResult = tryPublicApi(telephonyManager, code, requestId, preserveRawResponse)
+        val dispatchStartedAt = UssdPerformanceDiagnostics.mark()
+        val launchResult = tryPublicApi(
+            telephonyManager,
+            code,
+            requestId,
+            preserveRawResponse,
+            dispatchStartedAt
+        )
         if (launchResult == null) {
+            UssdPerformanceDiagnostics.record(
+                "silent.dispatch",
+                dispatchStartedAt,
+                "api=TelephonyManager.sendUssdRequest accepted=true codeChars=${code.length} segments=${code.count { it == '*' }} simBound=true retries=0"
+            )
             Log.d(TAG, "Native TelephonyManager.sendUssdRequest started for req #$requestId")
             return true
         }
+        UssdPerformanceDiagnostics.record(
+            "silent.dispatch",
+            dispatchStartedAt,
+            "api=TelephonyManager.sendUssdRequest accepted=false reason=${launchResult.take(48)}"
+        )
 
         // Release lock cleanly and notify caller synchronously if sendUssdRequest threw.
         synchronized(this) {
@@ -116,7 +139,8 @@ object SilentUssdOptimized {
         tm: TelephonyManager,
         code: String,
         requestId: Long,
-        preserveRawResponse: Boolean
+        preserveRawResponse: Boolean,
+        requestStartedAtNanos: Long
     ): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return "Native silent USSD requires Android 8.0 (API 26) or higher"
@@ -128,6 +152,11 @@ object SilentUssdOptimized {
                     request: String,
                     response: CharSequence
                 ) {
+                    UssdPerformanceDiagnostics.record(
+                        "silent.callback_wait",
+                        requestStartedAtNanos,
+                        "outcome=success responseChars=${response.length}"
+                    )
                     Log.d(TAG, "onReceiveUssdResponse received for req #$requestId (chars=${response.length})")
                     val raw = response.toString()
                     val delivered = if (preserveRawResponse) raw else extractUssdPopupResponse(raw)
@@ -139,6 +168,11 @@ object SilentUssdOptimized {
                     request: String,
                     failureCode: Int
                 ) {
+                    UssdPerformanceDiagnostics.record(
+                        "silent.callback_wait",
+                        requestStartedAtNanos,
+                        "outcome=failure failureCode=$failureCode"
+                    )
                     Log.w(TAG, "onReceiveUssdResponseFailed for req #$requestId: failureCode=$failureCode")
                     deliverFailure(requestId, describeSilentUssdFailureCode(failureCode))
                 }
