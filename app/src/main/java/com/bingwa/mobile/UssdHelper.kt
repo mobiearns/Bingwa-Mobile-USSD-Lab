@@ -628,7 +628,7 @@ object UssdHelper {
         val voiceType = runCatching { bound.voiceNetworkType }.getOrNull()?.toString() ?: "unavailable"
         val radioDetails = runCatching {
             val currentService = bound.serviceState
-            val dataReg = currentService?.dataRegState?.let {
+            val dataReg = currentService?.dataRegistrationState?.let {
                 when (it) {
                     ServiceState.STATE_IN_SERVICE -> "IN_SERVICE"
                     ServiceState.STATE_OUT_OF_SERVICE -> "OUT_OF_SERVICE"
