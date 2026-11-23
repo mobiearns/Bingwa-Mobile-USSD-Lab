@@ -2,6 +2,7 @@ package com.bingwa.mobile
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -223,5 +224,47 @@ class SignatureLiveMenuCoordinatorTest {
         val picked = selectLiveMenuSourceOffer(listOf(advancedSms, simpleData), selectedOfferId = -1)
         assertEquals(1, picked?.id)
         assertEquals("*180*5*2*[pn]#", redactPreviewPattern(SimpleSignatureVerifier.previewCode(simpleData.ussdCode).orEmpty()))
+    }
+
+    @Test fun liveMenuPrioritizesEnabledStar180OfferAndSupportsCustomCodeMode() {
+        val disabledSimple = OfferItem(
+            id = 10,
+            name = "Disabled Flex",
+            price = 15,
+            ussdCode = "*444*5*1*3*pn*2*1#",
+            category = OFFER_CATEGORY_DATA,
+            executionMode = OFFER_EXECUTION_MODE_SIMPLE,
+            enabled = false
+        )
+        val enabledNon180 = OfferItem(
+            id = 11,
+            name = "Enabled Flex",
+            price = 21,
+            ussdCode = "*444*5*1*3*pn*2*1#",
+            category = OFFER_CATEGORY_DATA,
+            executionMode = OFFER_EXECUTION_MODE_SIMPLE,
+            enabled = true
+        )
+        val enabled180 = OfferItem(
+            id = 12,
+            name = "1GB 1 Hour",
+            price = 19,
+            ussdCode = "*180*5*2*pn*5*1#",
+            category = OFFER_CATEGORY_DATA,
+            executionMode = OFFER_EXECUTION_MODE_SIMPLE,
+            enabled = true
+        )
+
+        val picked = selectLiveMenuSourceOffer(
+            listOf(disabledSimple, enabledNon180, enabled180),
+            selectedOfferId = -1
+        )
+        assertEquals(12, picked?.id)
+        assertNull(
+            selectLiveMenuSourceOffer(
+                listOf(disabledSimple, enabledNon180, enabled180),
+                selectedOfferId = LIVE_MENU_CUSTOM_SOURCE_ID
+            )
+        )
     }
 }

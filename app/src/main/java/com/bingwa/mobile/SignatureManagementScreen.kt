@@ -656,6 +656,12 @@ private fun SignatureLiveMenuPanel(
 ) {
     val context = LocalContext.current
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
+    var showCustomCodeDialog by remember { mutableStateOf(false) }
+    var customCodeDraft by remember {
+        mutableStateOf(
+            SignatureStudioStore.liveMenuCode(context).ifBlank { "*180*5*2*pn#" }
+        )
+    }
     val issueKey = if (state.hasDiagnosticIssue) {
         "${state.lastAttemptAt}|${state.lastAttemptOutcome}|${state.lastAttemptError}"
     } else null
@@ -664,6 +670,60 @@ private fun SignatureLiveMenuPanel(
         if (SignatureLiveMenuCoordinator.consumeAutoPresentIssueKey(state)) {
             showDiagnosticsDialog = true
         }
+    }
+
+    if (showCustomCodeDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomCodeDialog = false },
+            containerColor = SignatureStudioColors.card,
+            title = {
+                Text("Custom Live Menu code", color = SignatureStudioColors.t1, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Enter a verification template with pn (or 0712345678), e.g. *180*5*2*pn#. Live Menu dials it silently via TelephonyManager.sendUssdRequest().",
+                        color = SignatureStudioColors.t2,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    OutlinedTextField(
+                        value = customCodeDraft,
+                        onValueChange = { customCodeDraft = it },
+                        singleLine = true,
+                        label = { Text("USSD template") },
+                        placeholder = { Text("*180*5*2*pn#") }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = customCodeDraft.trim()
+                        if (SimpleSignatureVerifier.previewCode(trimmed) == null) {
+                            Toast.makeText(
+                                context,
+                                "Use a *...# template containing pn or 0712345678.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } else {
+                            SignatureStudioStore.setLiveMenuCode(context, trimmed)
+                            showCustomCodeDialog = false
+                            onSelectOffer(LIVE_MENU_CUSTOM_SOURCE_ID)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SignatureStudioColors.cyan,
+                        contentColor = Color.Black
+                    )
+                ) { Text("Test silently", fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomCodeDialog = false }) {
+                    Text("Cancel", color = SignatureStudioColors.t2)
+                }
+            }
+        )
     }
 
     if (showDiagnosticsDialog) {
@@ -762,6 +822,9 @@ private fun SignatureLiveMenuPanel(
                             DiagnosticRow("Menu source", state.sourceSummary)
                             DiagnosticRow("Selected SIM", state.simDescription)
                             DiagnosticRow("Readiness", state.telephonyReadiness)
+                            if (state.simAdvice.isNotBlank()) {
+                                DiagnosticRow("Dual-SIM check", state.simAdvice)
+                            }
                             DiagnosticRow("Duration", "${state.lastAttemptDurationMs} ms")
                             DiagnosticRow("Callback outcome", state.lastAttemptOutcome)
                             DiagnosticRow(
@@ -964,22 +1027,31 @@ private fun SignatureLiveMenuPanel(
             }
         }
 
-        val detectedSims = remember(selectedSim) { getAvailableSims(context) }
+        val detectedSims = remember(selectedSim, state.lastAttemptAt) { getAvailableSims(context) }
         val eligibleOffers = remember(offers) {
             offers.filter { SimpleSignatureVerifier.previewCode(it.ussdCode) != null }
-                .sortedBy {
-                    if (normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE) 0 else 1
-                }
+                .sortedWith(
+                    compareBy<OfferItem>(
+                        { if (normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE) 0 else 1 },
+                        { if (it.enabled) 0 else 1 },
+                        { if (it.ussdCode.trim().startsWith("*180*")) 0 else 1 }
+                    )
+                )
         }
         val activeSourceOffer = selectLiveMenuSourceOffer(offers, selectedOfferId)
+        val isCustomSelected = selectedOfferId == LIVE_MENU_CUSTOM_SOURCE_ID
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 val simOptions = buildList {
                     add(OFFER_SIM_USE_GENERAL to "App default SIM")
                     val slot1 = detectedSims.firstOrNull { it.simSlotIndex == 0 }
                     val slot2 = detectedSims.firstOrNull { it.simSlotIndex == 1 }
-                    add(USSD_SIM_SELECTION_SLOT_1 to ("SIM 1" + (slot1?.displayName?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")))
-                    add(USSD_SIM_SELECTION_SLOT_2 to ("SIM 2" + (slot2?.displayName?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")))
+                    val slot1Name = slot1?.carrierName?.toString()?.trim()?.ifBlank { null }
+                        ?: slot1?.displayName?.toString()?.trim()?.ifBlank { null }
+                    val slot2Name = slot2?.carrierName?.toString()?.trim()?.ifBlank { null }
+                        ?: slot2?.displayName?.toString()?.trim()?.ifBlank { null }
+                    add(USSD_SIM_SELECTION_SLOT_1 to ("SIM 1" + (slot1Name?.let { " · $it" } ?: "")))
+                    add(USSD_SIM_SELECTION_SLOT_2 to ("SIM 2" + (slot2Name?.let { " · $it" } ?: "")))
                 }
                 simOptions.forEach { (simValue, simLabel) ->
                     val active = selectedSim == simValue
@@ -995,21 +1067,67 @@ private fun SignatureLiveMenuPanel(
                     )
                 }
             }
-            if (eligibleOffers.isNotEmpty()) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    eligibleOffers.forEach { item ->
-                        val active = item.id == activeSourceOffer?.id
-                        val modeTag = if (normalizeOfferExecutionMode(item.executionMode, item.category) == OFFER_EXECUTION_MODE_SIMPLE) "Simple" else "Adv"
-                        FilterChip(
-                            selected = active,
-                            enabled = !state.loading,
-                            onClick = { onSelectOffer(item.id) },
-                            label = { Text("${item.name} ($modeTag)", fontSize = 10.sp, maxLines = 1) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = SignatureStudioColors.amber.copy(alpha = .16f),
-                                selectedLabelColor = SignatureStudioColors.amber
-                            )
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                eligibleOffers.forEach { item ->
+                    val active = !isCustomSelected && item.id == activeSourceOffer?.id
+                    val modeTag = if (normalizeOfferExecutionMode(item.executionMode, item.category) == OFFER_EXECUTION_MODE_SIMPLE) "Simple" else "Adv"
+                    FilterChip(
+                        selected = active,
+                        enabled = !state.loading,
+                        onClick = { onSelectOffer(item.id) },
+                        label = { Text("${item.name} ($modeTag)", fontSize = 10.sp, maxLines = 1) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = SignatureStudioColors.amber.copy(alpha = .16f),
+                            selectedLabelColor = SignatureStudioColors.amber
                         )
+                    )
+                }
+                FilterChip(
+                    selected = isCustomSelected,
+                    enabled = !state.loading,
+                    onClick = { showCustomCodeDialog = true },
+                    label = {
+                        Text(
+                            if (isCustomSelected) "Custom code ✎" else "Custom code",
+                            fontSize = 10.sp,
+                            maxLines = 1
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = SignatureStudioColors.cyan.copy(alpha = .16f),
+                        selectedLabelColor = SignatureStudioColors.cyan
+                    )
+                )
+            }
+        }
+
+        if (state.simAdvice.isNotBlank()) {
+            Surface(
+                Modifier.fillMaxWidth(),
+                color = SignatureStudioColors.amber.copy(alpha = .09f),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, SignatureStudioColors.amber.copy(alpha = .4f))
+            ) {
+                Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "DUAL-SIM ROUTING CHECK",
+                        color = SignatureStudioColors.amber,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        state.simAdvice,
+                        color = SignatureStudioColors.t1,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                    val targetSlot = state.recommendedSimSelection
+                    if (targetSlot != null && !state.loading) {
+                        val slotLabel = if (targetSlot == USSD_SIM_SELECTION_SLOT_2) "Switch to SIM 2" else "Switch to SIM 1"
+                        OutlinedButton(
+                            onClick = { onSelectSim(targetSlot) },
+                            modifier = Modifier.heightIn(min = 34.dp)
+                        ) { Text(slotLabel, color = SignatureStudioColors.cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
                     }
                 }
             }
