@@ -206,7 +206,7 @@ class SignatureLiveMenuCoordinatorTest {
 
         val picked = selectLiveMenuSourceOffer(listOf(advancedSms, simpleData), selectedOfferId = 0)
         assertEquals(1, picked?.id)
-        assertEquals("*180*2*5*0712345678#", SimpleSignatureVerifier.previewCode(picked?.ussdCode.orEmpty()))
+        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode(picked?.ussdCode.orEmpty()))
     }
 
     @Test fun liveMenuDoesNotFallBackToAdvancedOfferWhenNoSimpleOfferExists() {
@@ -242,7 +242,7 @@ class SignatureLiveMenuCoordinatorTest {
 
         val picked = selectLiveMenuSourceOffer(listOf(advancedSms, simpleData), selectedOfferId = -1)
         assertEquals(1, picked?.id)
-        assertEquals("*180*2*5*[pn]#", redactPreviewPattern(SimpleSignatureVerifier.previewCode(simpleData.ussdCode).orEmpty()))
+        assertEquals("*180*5*2*[pn]#", redactPreviewPattern(SimpleSignatureVerifier.previewCode(simpleData.ussdCode).orEmpty()))
     }
 
     @Test fun liveMenuPrioritizesEnabledStar180SimpleOffer() {
