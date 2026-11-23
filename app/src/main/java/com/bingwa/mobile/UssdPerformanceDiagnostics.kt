@@ -35,6 +35,18 @@ internal object UssdPerformanceDiagnostics {
     @Volatile private var silentUssdApiEvidence: String = "No native callback evidence captured yet."
     @Volatile private var silentRequestProfileEvidence: String = "No silent request profile captured yet."
     @Volatile private var silentFirstResponseEvidence: String = "No callback received yet."
+    @Volatile private var silentPreDispatchSnapshot: String = "not captured"
+    @Volatile private var silentAcceptedSnapshot: String = "not captured"
+    @Volatile private var silentCallbackSnapshot: String = "not captured"
+
+    fun recordSilentTelephonySnapshot(stage: String, detail: String) {
+        val safe = detail.replace(Regex("[\\r\\n]+"), " ").take(700)
+        when (stage) {
+            "PRE_DISPATCH" -> silentPreDispatchSnapshot = safe
+            "API_RETURNED_ACCEPTED" -> silentAcceptedSnapshot = safe
+            else -> silentCallbackSnapshot = "$stage: $safe"
+        }
+    }
 
     fun recordSilentRequestProfile(detail: String) {
         silentRequestProfileEvidence = detail.replace(Regex("[\\r\\n]+"), " ").take(500)
@@ -72,6 +84,7 @@ internal object UssdPerformanceDiagnostics {
         val category = when (failureCode) {
             android.telephony.TelephonyManager.USSD_RETURN_FAILURE -> "USSD_RETURN_FAILURE (-1): generic Android public-API failure. It may occur before modem dispatch (for example, framework/carrier policy) or later in telephony/network handling; callback supplied no carrier response text and does not identify the failing layer."
             android.telephony.TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service unavailable"
+            -3 -> "USSD_ERROR_NOT_ALLOWED (-3): Android rejected the request as not permitted"
             else -> "Unclassified Android USSD failure ($failureCode); Android public API does not define a more specific callback category for this value"
         }
         silentFirstResponseEvidence = "First app-visible callback: FAILURE; callback delay: ${elapsedMs}ms; result: $category; request echo matches: $requestEchoMatches; subscription binding matches: ${subscriptionBindingMatches ?: "not available"}; carrier response text: NOT PROVIDED BY ANDROID"
@@ -93,6 +106,9 @@ internal object UssdPerformanceDiagnostics {
         lastSilentCarrierConfig = carrierConfig
         lastSilentSourceSummary = sourceSummary
         lastSilentAndroidSdk = sdk
+        silentPreDispatchSnapshot = "not captured"
+        silentAcceptedSnapshot = "not captured"
+        silentCallbackSnapshot = "not captured"
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
             appendLine("Menu source (redacted): $lastSilentSourceSummary")
@@ -110,6 +126,9 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Request shape (no values): $silentRequestProfileEvidence")
             appendLine("Native callback/API evidence: $silentUssdApiEvidence")
             appendLine("First callback classification: $silentFirstResponseEvidence")
+            appendLine("Telephony state before request: $silentPreDispatchSnapshot")
+            appendLine("Telephony state after API acceptance: $silentAcceptedSnapshot")
+            appendLine("Telephony state at callback: $silentCallbackSnapshot")
             appendLine("Request code & phone number: redacted")
         }
     }
@@ -147,6 +166,9 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Request shape (no values): $silentRequestProfileEvidence")
             appendLine("Native callback/API evidence: $silentUssdApiEvidence")
             appendLine("First callback classification: $silentFirstResponseEvidence")
+            appendLine("Telephony state before request: $silentPreDispatchSnapshot")
+            appendLine("Telephony state after API acceptance: $silentAcceptedSnapshot")
+            appendLine("Telephony state at callback: $silentCallbackSnapshot")
             appendLine("Raw carrier response:")
             appendLine(if (safeResponse.isBlank()) "[Android returned an empty response]" else safeResponse)
             if (response.length > safeResponse.length) appendLine("[Response truncated in copy report at 6000 chars]")
@@ -176,6 +198,9 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Request shape (no values): $silentRequestProfileEvidence")
             appendLine("Native callback/API evidence: $silentUssdApiEvidence")
             appendLine("First callback classification: $silentFirstResponseEvidence")
+            appendLine("Telephony state before request: $silentPreDispatchSnapshot")
+            appendLine("Telephony state after API acceptance: $silentAcceptedSnapshot")
+            appendLine("Telephony state at callback: $silentCallbackSnapshot")
             appendLine("Failure detail: $error")
         }
     }
@@ -210,6 +235,9 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Request shape (no values): $silentRequestProfileEvidence")
             appendLine("Native callback/API evidence: $silentUssdApiEvidence")
             appendLine("First callback classification: $silentFirstResponseEvidence")
+            appendLine("Telephony state before request: $silentPreDispatchSnapshot")
+            appendLine("Telephony state after API acceptance: $silentAcceptedSnapshot")
+            appendLine("Telephony state at callback: $silentCallbackSnapshot")
             appendLine("Detail: $reason")
         }
     }
