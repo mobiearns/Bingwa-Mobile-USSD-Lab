@@ -145,6 +145,7 @@ internal fun reduceLiveMenuSuccess(
             rawResponseReceived = rawResponse.isNotEmpty(),
             lastParsedOptionCount = 0,
             isCarrierRetryLimit = true,
+            isSafaricomServiceError = false,
             previousMenuRetained = retained,
             blockedBecauseRunning = false,
             autoRefreshPausedByCarrierLimit = true
@@ -197,6 +198,7 @@ internal fun reduceLiveMenuFailure(
         rawResponseReceived = false,
         lastParsedOptionCount = 0,
         isCarrierRetryLimit = false,
+        isSafaricomServiceError = false,
         previousMenuRetained = retained,
         blockedBecauseRunning = false
     )
