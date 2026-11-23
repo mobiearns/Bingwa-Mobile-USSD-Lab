@@ -45,32 +45,42 @@ internal object SimpleSignatureVerifier {
     }
 
     fun previewCode(fullCode: String): String? {
-        // Strip pasted whitespace and URL-encoded hash, then build a canonical
-        // dial string. The native telephony API only receives digits, * and #.
+        // Saved templates may contain visual whitespace, but the result returned
+        // from this function is always a pure, numeric Android dial string.
         val normalized = fullCode.trim().filterNot(Char::isWhitespace).replace("%23", "#", ignoreCase = true)
-        if (!Regex("""^\*[A-Za-z0-9\[\]]+(?:\*[A-Za-z0-9\[\]]+)*#?$""").matches(normalized)) return null
+        if (!Regex("""^\\*[A-Za-z0-9\\[\\]]+(?:\\*[A-Za-z0-9\\[\\]]+)*#?$""").matches(normalized)) return null
         val parts = normalized.removePrefix("*").removeSuffix("#").split("*")
         if (parts.isEmpty() || parts.any(String::isBlank)) return null
 
-        // Safaricom's Live Menu verification route is always 2 -> 5 -> phone.
-        if (parts.firstOrNull() == "180") {
-            val hasPhone = parts.any { it.equals("pn", true) || it.equals("[pn]", true) || it == VERIFICATION_PHONE_NUMBER }
-            if (hasPhone) return "*180*2*5*$VERIFICATION_PHONE_NUMBER#"
+        fun isPhoneMarker(value: String): Boolean =
+            value.equals("pn", true) || value.equals("[pn]", true) || value == VERIFICATION_PHONE_NUMBER
+        fun isPositionMarker(value: String): Boolean =
+            value.equals("position", true) || value.equals("[position]", true)
+
+        // Exactly one placeholder/phone marker is allowed. Text or displaced
+        // menu steps before the marker are rejected rather than guessed at.
+        val markerIndices = parts.indices.filter { isPhoneMarker(parts[it]) || isPositionMarker(parts[it]) }
+        if (markerIndices.size != 1) return null
+        val markerIndex = markerIndices.single()
+        val prefix = parts.take(markerIndex)
+        val suffix = parts.drop(markerIndex + 1)
+        if (prefix.isEmpty() || prefix.any { !it.all(Char::isDigit) }) return null
+        if (suffix.any { !it.all(Char::isDigit) }) return null
+
+        if (prefix.first() == "180") {
+            // Accept only the current Safaricom route (2 -> 5) and the known
+            // legacy ordering (5 -> 2), then always emit the canonical 2 -> 5.
+            if (prefix != listOf("180", "2", "5") && prefix != listOf("180", "5", "2")) return null
+            if (!isPhoneMarker(parts[markerIndex])) return null
+            return "*180*2*5*$VERIFICATION_PHONE_NUMBER#"
         }
 
-        val markerIndex = parts.indexOfFirst {
-            it.equals("pn", true) || it.equals("[pn]", true) || it.equals("position", true) || it.equals("[position]", true)
+        val prefixCode = "*${prefix.joinToString("*")}"
+        val code = when {
+            isPositionMarker(parts[markerIndex]) -> "$prefixCode#"
+            else -> "$prefixCode*$VERIFICATION_PHONE_NUMBER#"
         }
-        val code = if (markerIndex > 0) {
-            val prefix = parts.take(markerIndex).joinToString("*")
-            val marker = parts[markerIndex]
-            if (marker.equals("pn", true) || marker.equals("[pn]", true)) "*$prefix*$VERIFICATION_PHONE_NUMBER#" else "*$prefix#"
-        } else {
-            val fixedIndex = parts.indexOfFirst { it == VERIFICATION_PHONE_NUMBER }
-            if (fixedIndex <= 0) return null
-            "*${parts.take(fixedIndex).joinToString("*")}*$VERIFICATION_PHONE_NUMBER#"
-        }
-        return code.takeIf { Regex("""^\*\d+(?:\*\d+)*#$""").matches(it) }
+        return code.takeIf { Regex("""^\\*\\d+(?:\\*\\d+)*#$""").matches(it) }
     }
 
     fun menuOptions(response: String): List<Pair<Int, String>> {
