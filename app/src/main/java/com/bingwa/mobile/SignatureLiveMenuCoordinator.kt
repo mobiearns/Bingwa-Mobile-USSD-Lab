@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal const val LIVE_MENU_AUTO_REFRESH_INTERVAL_MS: Long = 12 * 60_000L
+internal const val LIVE_MENU_CUSTOM_SOURCE_ID: Int = Int.MIN_VALUE
 
 internal data class SignatureLiveMenuState(
     // Last successfully captured and parsed menu (kept separate from latest attempt)
@@ -35,7 +36,9 @@ internal data class SignatureLiveMenuState(
     val telephonyReadiness: String = "Not inspected yet",
     val carrierConfig: String = "Not inspected yet",
     val sourceOfferName: String = "",
-    val sourceSummary: String = "Not selected"
+    val sourceSummary: String = "Not selected",
+    val simAdvice: String = "",
+    val recommendedSimSelection: Int? = null
 ) {
     val hasValidMenu: Boolean get() = validOptions.isNotEmpty()
     val hasDiagnosticIssue: Boolean
@@ -307,19 +310,24 @@ internal object SignatureLiveMenuCoordinator {
 
         // The live-menu workspace resolves its silent verification code from an
         // eligible Simple-mode offer first (or custom saved template), never from free input.
-        val sourceOffer = selectLiveMenuSourceOffer(offers, selectedOfferId)
-        val sourceCode = sourceOffer?.ussdCode ?: liveMenuCode
+        val isCustomSource = selectedOfferId == LIVE_MENU_CUSTOM_SOURCE_ID
+        val sourceOffer = if (isCustomSource) null else selectLiveMenuSourceOffer(offers, selectedOfferId)
+        val sourceCode = if (isCustomSource) liveMenuCode else (sourceOffer?.ussdCode ?: liveMenuCode)
         val preview = SimpleSignatureVerifier.previewCode(sourceCode)
         val sourceSummary = buildString {
-            append(sourceOffer?.name?.ifBlank { "Custom" } ?: "Saved live-menu code")
+            append(if (isCustomSource) "Custom verification code" else sourceOffer?.name?.ifBlank { "Custom" } ?: "Saved live-menu code")
             if (!preview.isNullOrBlank()) {
                 append(" (")
                 append(redactPreviewPattern(preview))
                 append(")")
             }
         }
-        val selectedSim = liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
-            ?: sourceOffer?.simSelection?.takeUnless { it == OFFER_SIM_USE_GENERAL }
+        val selectedSim = if (isCustomSource) {
+            liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
+        } else {
+            liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
+                ?: sourceOffer?.simSelection?.takeUnless { it == OFFER_SIM_USE_GENERAL }
+        }
 
         val sims = getAvailableSims(appContext, forceRefresh = true)
         val resolvedTarget = resolveUssdSimTargets(
@@ -338,6 +346,30 @@ internal object SignatureLiveMenuCoordinator {
             val carrierSuffix = matchedCarrier?.let { name -> " · $name" }.orEmpty()
             "SIM slot ${it.slotIndex + 1}$carrierSuffix (subscription ID redacted)"
         } ?: "No active SIM resolved for current selection"
+        val defaultVoiceSubId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            android.telephony.SubscriptionManager.getDefaultVoiceSubscriptionId()
+        } else {
+            android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID
+        }
+        val defaultVoiceInfo = sims.firstOrNull { it.subscriptionId == defaultVoiceSubId }
+        val recommendedSimSelection = if (
+            resolvedTarget != null &&
+            defaultVoiceSubId != android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID &&
+            resolvedTarget.subId != defaultVoiceSubId &&
+            defaultVoiceInfo != null
+        ) {
+            if (defaultVoiceInfo.simSlotIndex == 1) USSD_SIM_SELECTION_SLOT_2 else USSD_SIM_SELECTION_SLOT_1
+        } else null
+        val simAdvice = when {
+            resolvedTarget == null -> "No active SIM is currently resolved. Select an installed SIM slot and refresh."
+            recommendedSimSelection != null -> {
+                val recommendedSlot = if (recommendedSimSelection == USSD_SIM_SELECTION_SLOT_2) "SIM 2" else "SIM 1"
+                "The selected SIM is not Android's default voice SIM. Android's default voice SIM is $recommendedSlot; try it for carrier USSD routing."
+            }
+            defaultVoiceSubId == android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID ->
+                "Android has no default voice SIM selected. Choose a voice SIM in Android system settings if USSD requests fail."
+            else -> ""
+        }
         val carrierConfig = UssdHelper.describeSilentUssdCarrierConfig(appContext, resolvedTarget?.subId)
         val telephonyReadiness = UssdHelper.describeSilentUssdReadiness(
             appContext,
@@ -376,8 +408,10 @@ internal object SignatureLiveMenuCoordinator {
                         simDescription = simDescription,
                         telephonyReadiness = telephonyReadiness,
                         carrierConfig = carrierConfig,
-                        sourceOfferName = sourceOffer?.name.orEmpty(),
-                        sourceSummary = sourceSummary
+                        sourceOfferName = sourceOffer?.name ?: if (isCustomSource) "Custom verification code" else "",
+                        sourceSummary = sourceSummary,
+                        simAdvice = simAdvice,
+                        recommendedSimSelection = recommendedSimSelection
                     ),
                     error = reason,
                     elapsedMs = 0L,
@@ -401,8 +435,11 @@ internal object SignatureLiveMenuCoordinator {
                 simDescription = simDescription,
                 telephonyReadiness = telephonyReadiness,
                 carrierConfig = carrierConfig,
-                sourceOfferName = sourceOffer?.name.orEmpty(),
+                sourceOfferName = sourceOffer?.name ?: if (isCustomSource) "Custom verification code" else "",
                 sourceSummary = sourceSummary
+            ).copy(
+                simAdvice = simAdvice,
+                recommendedSimSelection = recommendedSimSelection
             )
             _state.value = startedState
             UssdPerformanceDiagnostics.recordSilentSignatureMenuStarted(
