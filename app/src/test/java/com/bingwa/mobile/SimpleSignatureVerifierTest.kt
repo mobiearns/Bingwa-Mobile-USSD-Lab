@@ -32,7 +32,7 @@ class SimpleSignatureVerifierTest {
 
     @Test fun safaricomLiveMenuUsesCorrectChainedOrderAndStopsAtPhonePrompt() {
         assertEquals(
-            "*180*2*5*0712345678#",
+            "*180*5*2*0712345678#",
             SimpleSignatureVerifier.previewCode("*180*2*5*pn*1*2#")
         )
         assertEquals(
@@ -49,12 +49,12 @@ class SimpleSignatureVerifierTest {
     }
 
     @Test fun nativeBoundaryAcceptsOnlyAlreadyCanonicalDialStrings() {
-        assertEquals("*180*2*5*0712345678#", canonicalSilentUssdDialString("*180*2*5*0712345678#"))
-        assertNull(canonicalSilentUssdDialString(" *180*2*5*0712345678#"))
-        assertNull(canonicalSilentUssdDialString("*180 *2*5*0712345678#"))
-        assertNull(canonicalSilentUssdDialString("*180*2*5*0712345678"))
-        assertNull(canonicalSilentUssdDialString("*180*2*5*pn#"))
-        assertNull(canonicalSilentUssdDialString("tel:*180*2*5*0712345678#"))
+        assertEquals("*180*5*2*0712345678#", canonicalSilentUssdDialString("*180*5*2*0712345678#"))
+        assertNull(canonicalSilentUssdDialString(" *180*5*2*0712345678#"))
+        assertNull(canonicalSilentUssdDialString("*180 *5*2*0712345678#"))
+        assertNull(canonicalSilentUssdDialString("*180*5*2*0712345678"))
+        assertNull(canonicalSilentUssdDialString("*180*5*2*pn#"))
+        assertNull(canonicalSilentUssdDialString("tel:*180*5*2*0712345678#"))
     }
     @Test fun identifiesSafaricomSubscriberRegistrationServiceResponse() {
         val response = "Dear Agent, the Subscriber Registration function has been deactivated. Kindly use the Jiandikishe App for Sim Activation"
