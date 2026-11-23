@@ -354,12 +354,12 @@ object SilentUssdOptimized {
         }
     }
 
-    private fun deliverFailure(requestId: Long, reason: String) {
+    private fun deliverFailure(requestId: Long, reason: String, failureCode: Int? = null) {
         val outcome = when {
             reason.contains("timeout", ignoreCase = true) -> "APP_TIMEOUT_NO_CALLBACK"
             else -> "APP_FAILURE"
         }
-        UssdPerformanceDiagnostics.recordNativeRequestFinished(requestId, outcome)
+        UssdPerformanceDiagnostics.recordNativeRequestFinished(requestId, outcome, failureCode)
         val cb = synchronized(this) {
             if (requestId != activeRequestId) {
                 Log.d(TAG, "Ignoring stale USSD failure for requestId=$requestId")
