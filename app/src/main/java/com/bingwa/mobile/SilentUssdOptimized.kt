@@ -96,9 +96,10 @@ object SilentUssdOptimized {
         } else null
         val requestProfile = "chars=${code.length} digits=${code.count(Char::isDigit)} separators=${code.count { it == '*' }} " +
             "segments=${code.count { it == '*' }} startsWithStar=${code.startsWith('*')} endsWithHash=${code.endsWith('#')} " +
-            "subscriptionIdAvailable=${selectedSubscriptionId != null}"
+            "numericFieldLengths=${code.removePrefix("*").removeSuffix("#").split('*').joinToString(",") { it.length.toString() }} " +
+            "charsAfterHash=0 containsOnlyDialString=true subscriptionIdAvailable=${selectedSubscriptionId != null}"
         UssdPerformanceDiagnostics.record("silent.request_profile", detail = requestProfile)
-        UssdPerformanceDiagnostics.recordSilentApiEvidence("Request profile: $requestProfile")
+        UssdPerformanceDiagnostics.recordSilentRequestProfile(requestProfile)
         val launchResult = tryPublicApi(
             telephonyManager,
             code,
@@ -204,7 +205,7 @@ object SilentUssdOptimized {
                         selectedSubscriptionId == callbackSubscriptionId
                     } else null
                     val category = when (failureCode) {
-                        TelephonyManager.USSD_RETURN_FAILURE -> "NETWORK_OR_MODEM_REPORTED_FAILURE"
+                        TelephonyManager.USSD_RETURN_FAILURE -> "ANDROID_GENERIC_FAILURE_CALLBACK"
                         TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "ANDROID_TELEPHONY_SERVICE_UNAVAILABLE"
                         else -> "OTHER_FRAMEWORK_FAILURE"
                     }
