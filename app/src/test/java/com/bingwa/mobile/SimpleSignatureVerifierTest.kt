@@ -41,6 +41,19 @@ class SimpleSignatureVerifierTest {
         )
     }
 
+    @Test fun previewStripsFormattingAndRejectsDecoratedDialStrings() {
+        assertEquals("*180*2*5*0712345678#", SimpleSignatureVerifier.previewCode("  *180 * 5 * 2 * pn #  "))
+        assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*pn%23"))
+        assertNull(SimpleSignatureVerifier.previewCode("Dial *180*2*5*pn# now"))
+        assertNull(SimpleSignatureVerifier.previewCode("*180*2*5*pn# extra"))
+    }
+
+    @Test fun identifiesSafaricomSubscriberRegistrationServiceResponse() {
+        val response = "Dear Agent, the Subscriber Registration function has been deactivated. Kindly use the Jiandikishe App for Sim Activation"
+        assertEquals(true, SimpleSignatureVerifier.isSafaricomServiceErrorResponse(response))
+        assertEquals(false, SimpleSignatureVerifier.isSafaricomServiceErrorResponse("1. 1GB Daily\\n2. 250MB 24 Hours"))
+    }
+
     @Test fun positionMarkerKeepsPrefixOnlyPreview() {
         assertEquals("*544#", SimpleSignatureVerifier.previewCode("*544*position*1#"))
         assertNull(SimpleSignatureVerifier.previewCode("*544*1#"))
