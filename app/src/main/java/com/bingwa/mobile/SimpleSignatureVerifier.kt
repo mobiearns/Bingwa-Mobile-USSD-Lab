@@ -48,7 +48,7 @@ internal object SimpleSignatureVerifier {
         // Saved templates may contain visual whitespace, but the result returned
         // from this function is always a pure, numeric Android dial string.
         val normalized = fullCode.trim().filterNot(Char::isWhitespace).replace("%23", "#", ignoreCase = true)
-        if (!Regex("""^\\*[A-Za-z0-9\\[\\]]+(?:\\*[A-Za-z0-9\\[\\]]+)*#?$""").matches(normalized)) return null
+        if (!Regex("""^\*[A-Za-z0-9\\[\\]]+(?:\*[A-Za-z0-9\\[\\]]+)*#?$""").matches(normalized)) return null
         val parts = normalized.removePrefix("*").removeSuffix("#").split("*")
         if (parts.isEmpty() || parts.any(String::isBlank)) return null
 
@@ -80,7 +80,7 @@ internal object SimpleSignatureVerifier {
             isPositionMarker(parts[markerIndex]) -> "$prefixCode#"
             else -> "$prefixCode*$VERIFICATION_PHONE_NUMBER#"
         }
-        return code.takeIf { Regex("""^\\*\\d+(?:\\*\\d+)*#$""").matches(it) }
+        return code.takeIf { Regex("""^\*\\d+(?:\*\\d+)*#$""").matches(it) }
     }
 
     fun menuOptions(response: String): List<Pair<Int, String>> {
