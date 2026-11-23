@@ -29,6 +29,7 @@ internal data class SignatureLiveMenuState(
     val rawResponseReceived: Boolean = false,
     val lastParsedOptionCount: Int = 0,
     val isCarrierRetryLimit: Boolean = false,
+    val isSafaricomServiceError: Boolean = false,
     val previousMenuRetained: Boolean = false,
     val blockedBecauseRunning: Boolean = false,
     val autoRefreshPausedByCarrierLimit: Boolean = false,
@@ -122,6 +123,7 @@ internal fun reduceLiveMenuSuccess(
             rawResponseReceived = true,
             lastParsedOptionCount = parsedOptions.size,
             isCarrierRetryLimit = false,
+            isSafaricomServiceError = false,
             previousMenuRetained = false,
             blockedBecauseRunning = false,
             autoRefreshPausedByCarrierLimit = false
@@ -149,21 +151,26 @@ internal fun reduceLiveMenuSuccess(
         )
     }
 
-    val noMenuError = if (rawResponse.isBlank()) {
-        "Carrier callback succeeded, but Android delivered an empty response with no numbered menu options."
-    } else {
-        "Carrier responded (${rawResponse.length} chars), but no readable numbered menu options could be extracted."
+    val safaricomServiceError = SimpleSignatureVerifier.isSafaricomServiceErrorResponse(rawResponse)
+    val noMenuError = when {
+        safaricomServiceError ->
+            "SAFARICOM ERROR RESPONSE: Safaricom returned a service/registration notice instead of the requested offers menu. The carrier response is displayed below exactly as received. Check the verification USSD path and SIM registration/service status; Bingwa will not treat this message as menu options."
+        rawResponse.isBlank() ->
+            "Carrier callback succeeded, but Android delivered an empty response with no numbered menu options."
+        else ->
+            "Carrier responded (${rawResponse.length} chars), but no readable numbered menu options could be extracted. The carrier response is displayed below exactly as received."
     }
     return previous.copy(
         stale = retained,
         loading = false,
         lastAttemptDurationMs = elapsedMs,
-        lastAttemptOutcome = "CALLBACK SUCCESS · NO PARSED OPTIONS",
+        lastAttemptOutcome = if (safaricomServiceError) "CALLBACK SUCCESS · SAFARICOM ERROR RESPONSE" else "CALLBACK SUCCESS · NO PARSED OPTIONS",
         lastAttemptError = noMenuError,
         lastAttemptRawResponse = rawResponse,
         rawResponseReceived = rawResponse.isNotEmpty(),
         lastParsedOptionCount = 0,
         isCarrierRetryLimit = false,
+        isSafaricomServiceError = safaricomServiceError,
         previousMenuRetained = retained,
         blockedBecauseRunning = false,
         autoRefreshPausedByCarrierLimit = false
