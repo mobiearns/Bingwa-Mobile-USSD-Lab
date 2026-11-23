@@ -283,5 +283,5 @@ object SilentUssdOptimized {
  */
 internal fun canonicalSilentUssdDialString(raw: String): String? {
     if (raw.length !in 3..50) return null
-    return raw.takeIf { Regex("""^\\*[0-9]+(?:\\*[0-9]+)*#$""").matches(it) }
+    return raw.takeIf { Regex("""^\*[0-9]+(?:\*[0-9]+)*#$""").matches(it) }
 }
