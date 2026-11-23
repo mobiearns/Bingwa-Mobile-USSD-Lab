@@ -103,7 +103,8 @@ object SilentUssdOptimized {
             code,
             requestId,
             preserveRawResponse,
-            dispatchStartedAt
+            dispatchStartedAt,
+            selectedSubscriptionId
         )
         if (launchResult == null) {
             UssdPerformanceDiagnostics.record(
@@ -148,7 +149,8 @@ object SilentUssdOptimized {
         code: String,
         requestId: Long,
         preserveRawResponse: Boolean,
-        requestStartedAtNanos: Long
+        requestStartedAtNanos: Long,
+        selectedSubscriptionId: Int?
     ): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return "Native silent USSD requires Android 8.0 (API 26) or higher"
@@ -171,6 +173,12 @@ object SilentUssdOptimized {
                         "callbackSeparators=${request.count { it == '*' }} subscriptionBindingMatches=${bindingMatches ?: "not_available"}"
                     UssdPerformanceDiagnostics.record("silent.callback_context", detail = evidence)
                     UssdPerformanceDiagnostics.recordSilentApiEvidence("Callback context: $evidence")
+                    UssdPerformanceDiagnostics.recordSilentFirstResponse(
+                        response = response.toString(),
+                        elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L),
+                        requestEchoMatches = requestEchoMatches,
+                        subscriptionBindingMatches = bindingMatches
+                    )
                     UssdPerformanceDiagnostics.record(
                         "silent.callback_wait",
                         requestStartedAtNanos,
@@ -204,6 +212,12 @@ object SilentUssdOptimized {
                         "subscriptionBindingMatches=${bindingMatches ?: "not_available"}"
                     UssdPerformanceDiagnostics.record("silent.callback_context", detail = evidence)
                     UssdPerformanceDiagnostics.recordSilentApiEvidence("Callback context: $evidence")
+                    UssdPerformanceDiagnostics.recordSilentFirstFailure(
+                        failureCode = failureCode,
+                        elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L),
+                        requestEchoMatches = requestEchoMatches,
+                        subscriptionBindingMatches = bindingMatches
+                    )
                     UssdPerformanceDiagnostics.record(
                         "silent.callback_wait",
                         requestStartedAtNanos,
