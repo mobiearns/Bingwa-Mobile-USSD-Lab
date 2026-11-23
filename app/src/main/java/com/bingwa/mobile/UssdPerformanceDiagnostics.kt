@@ -39,6 +39,60 @@ internal object UssdPerformanceDiagnostics {
     @Volatile private var silentAcceptedSnapshot: String = "not captured"
     @Volatile private var silentCallbackSnapshot: String = "not captured"
 
+    // Tracks only Bingwa requests in this process. Android does not expose the
+    // system-wide pending MMI session through the public Telephony API.
+    private val processStartedAtElapsedMs = SystemClock.elapsedRealtime()
+    private val nativeLifecycleLock = Any()
+    private var nativeRequestsStartedThisProcess = 0
+    private var lastNativeRequestStartedAtElapsedMs = 0L
+    private var lastNativeRequestId = 0L
+    private var activeNativeLifecycleRequestId = 0L
+    private var lastNativeRequestOutcome = "NONE"
+    private var lastNativeRequestFailureCode: Int? = null
+
+    fun recordNativeRequestStarted(requestId: Long) {
+        synchronized(nativeLifecycleLock) {
+            nativeRequestsStartedThisProcess++
+            lastNativeRequestStartedAtElapsedMs = SystemClock.elapsedRealtime()
+            lastNativeRequestId = requestId
+            activeNativeLifecycleRequestId = requestId
+            lastNativeRequestOutcome = "IN_PROGRESS"
+            lastNativeRequestFailureCode = null
+        }
+        record("silent.lifecycle_start", detail = "requestId=$requestId processRequestNumber=$nativeRequestsStartedThisProcess")
+    }
+
+    fun recordNativeRequestFinished(requestId: Long, outcome: String, failureCode: Int? = null) {
+        val accepted = synchronized(nativeLifecycleLock) {
+            if (activeNativeLifecycleRequestId != requestId) false else {
+                activeNativeLifecycleRequestId = 0L
+                lastNativeRequestOutcome = outcome
+                lastNativeRequestFailureCode = failureCode
+                true
+            }
+        }
+        if (accepted) record("silent.lifecycle_finish", detail = "requestId=$requestId outcome=$outcome failureCode=${failureCode ?: "none"}")
+    }
+
+    private fun nativeRequestLifecycleSummary(): String = synchronized(nativeLifecycleLock) {
+        val now = SystemClock.elapsedRealtime()
+        val processAge = (now - processStartedAtElapsedMs).coerceAtLeast(0L)
+        val sinceLastStart = if (lastNativeRequestStartedAtElapsedMs > 0L) (now - lastNativeRequestStartedAtElapsedMs).coerceAtLeast(0L) else null
+        buildString {
+            appendLine("Device uptime since boot: ${now}ms")
+            appendLine("App process age: ${processAge}ms")
+            appendLine("Native requests started in this app process: $nativeRequestsStartedThisProcess")
+            appendLine("Last app request sequence ID: ${if (lastNativeRequestId > 0L) lastNativeRequestId else "none"}")
+            appendLine("Time since last app request started: ${sinceLastStart?.let { "${it}ms" } ?: "none"}")
+            appendLine("Last app request outcome: $lastNativeRequestOutcome")
+            appendLine("Last Android callback failure code: ${lastNativeRequestFailureCode ?: "none"}")
+            appendLine("Native request currently active in Bingwa: ${activeNativeLifecycleRequestId != 0L}")
+            appendLine("System-wide pending MMI/USSD session: UNKNOWN — not exposed by the public Android Telephony API to this app")
+            appendLine("FDN state: NOT COLLECTED — verify in SIM settings or authorized platform diagnostics")
+            appendLine("Radio/RIL transmission evidence: NOT AVAILABLE through ordinary app APIs; controlled ADB radio log capture is required")
+        }.trimEnd()
+    }
+
     fun recordSilentTelephonySnapshot(stage: String, detail: String) {
         val safe = detail.replace(Regex("[\\r\\n]+"), " ").take(700)
         when (stage) {
@@ -467,6 +521,10 @@ internal object UssdPerformanceDiagnostics {
             }
             appendLine("Diagnostics buffer: self-generated accessibility events suppressed=${bufferStats.first}, low-priority events dropped=${bufferStats.second}, lower-priority events displaced=${bufferStats.third}")
             appendLine("Privacy: no serial number, IMEI, phone numbers, PINs, USSD menu text or entered values are recorded.")
+            appendLine()
+            appendLine("NATIVE USSD SESSION / CLEAN-TEST CORRELATION")
+            appendLine(nativeRequestLifecycleSummary())
+            appendLine("Interpretation: this tracks only Bingwa requests in the current app process. It cannot prove that Android has no pending MMI session created by the dialer, another app, or an earlier process.")
             appendLine()
             appendLine("SIGNATURE MANAGEMENT · SILENT LIVE MENU CAPTURE")
             appendLine(silentSignatureMenuReport)
