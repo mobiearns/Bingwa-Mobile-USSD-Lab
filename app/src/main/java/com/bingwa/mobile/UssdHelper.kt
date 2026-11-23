@@ -66,16 +66,9 @@ object UssdHelper {
         // Validate the WHOLE dial string, not merely a matching substring.
         // Silent verification requests must never pass labels, spaces, quotes,
         // brackets, line breaks, or any other decoration to Android telephony.
-        val validPattern = Regex("^[*#\\d]+$")
+        val validPattern = Regex("^\\*\\d+(?:\\*\\d+)*#$")
         if (!validPattern.matches(trimmed)) {
             return "USSD code contains invalid characters (only digits, *, and # are allowed)"
-        }
-        val inner = trimmed.substring(1, trimmed.length - 1)
-        if (!Regex("\\d").containsMatchIn(inner)) {
-            return "USSD code must contain at least one digit"
-        }
-        if (inner.count { it == '*' } > 2) {
-            Log.d("UssdHelper", "USSD code uses chained sub-menu segments")
         }
         return null
     }
