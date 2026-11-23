@@ -1029,8 +1029,10 @@ private fun SignatureLiveMenuPanel(
 
         val detectedSims = remember(selectedSim, state.lastAttemptAt) { getAvailableSims(context) }
         val eligibleOffers = remember(offers) {
-            offers.filter { SimpleSignatureVerifier.previewCode(it.ussdCode) != null }
-                .sortedWith(
+            offers.filter {
+                normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE &&
+                    SimpleSignatureVerifier.previewCode(it.ussdCode) != null
+            }.sortedWith(
                     compareBy<OfferItem>(
                         { if (normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE) 0 else 1 },
                         { if (it.enabled) 0 else 1 },
