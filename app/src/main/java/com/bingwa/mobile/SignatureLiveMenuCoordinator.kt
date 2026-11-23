@@ -370,7 +370,7 @@ internal object SignatureLiveMenuCoordinator {
         val started = try {
             UssdHelper.dialUssd(
                 context = appContext,
-                ussdCode = preview,
+                ussdCode = preview.orEmpty(),
                 silentOnly = true,
                 subIdOverride = selectedSim,
                 preserveRawResponse = true,
