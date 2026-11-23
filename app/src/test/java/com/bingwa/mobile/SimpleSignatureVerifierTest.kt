@@ -48,6 +48,14 @@ class SimpleSignatureVerifierTest {
         assertNull(SimpleSignatureVerifier.previewCode("*180*2*5*pn# extra"))
     }
 
+    @Test fun nativeBoundaryAcceptsOnlyAlreadyCanonicalDialStrings() {
+        assertEquals("*180*2*5*0712345678#", canonicalSilentUssdDialString("*180*2*5*0712345678#"))
+        assertNull(canonicalSilentUssdDialString(" *180*2*5*0712345678#"))
+        assertNull(canonicalSilentUssdDialString("*180 *2*5*0712345678#"))
+        assertNull(canonicalSilentUssdDialString("*180*2*5*0712345678"))
+        assertNull(canonicalSilentUssdDialString("*180*2*5*pn#"))
+        assertNull(canonicalSilentUssdDialString("tel:*180*2*5*0712345678#"))
+    }
     @Test fun identifiesSafaricomSubscriberRegistrationServiceResponse() {
         val response = "Dear Agent, the Subscriber Registration function has been deactivated. Kindly use the Jiandikishe App for Sim Activation"
         assertEquals(true, SimpleSignatureVerifier.isSafaricomServiceErrorResponse(response))
