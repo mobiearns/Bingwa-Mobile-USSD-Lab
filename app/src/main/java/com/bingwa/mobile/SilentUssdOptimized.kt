@@ -64,6 +64,12 @@ object SilentUssdOptimized {
             onFailure("USSD code is empty")
             return false
         }
+        // Keep the native API boundary strict too: every caller must provide a
+        // complete dial string, not a label, template marker, or formatted text.
+        if (!Regex("""\\*\\d+(?:\\*\\d+)*#""").matches(code)) {
+            onFailure("USSD code must contain only digits and * separators, with one final #.")
+            return false
+        }
 
         if (!isProcessing.compareAndSet(false, true)) {
             onFailure("USSD execution already in progress")
