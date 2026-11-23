@@ -29,6 +29,13 @@ internal object SimpleSignatureVerifier {
     private val dateLikeLine = Regex("""^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}(?:\s.*)?$""")
     private val currencyAmount = Regex("""(?i)\b(?:kshs?|kes)\s*[:.]?\s*[0-9][0-9,.]*\b|(?<!\w)@[ ]*[0-9][0-9,.]*""")
 
+    fun isSafaricomServiceErrorResponse(response: String): Boolean {
+        val lower = response.lowercase()
+        return lower.contains("subscriber registration function") ||
+            (lower.contains("has been deactivated") && lower.contains("jiandikishe")) ||
+            (lower.contains("sim activation") && lower.contains("jiandikishe"))
+    }
+
     fun isCarrierRetryLimitResponse(response: String): Boolean {
         val lower = response.lowercase()
         return lower.contains("max number of menu retries is reached") ||
@@ -38,50 +45,32 @@ internal object SimpleSignatureVerifier {
     }
 
     fun previewCode(fullCode: String): String? {
-        val normalized = fullCode.trim().replace("%23", "#").trimEnd('#')
-        if (!normalized.startsWith("*")) return null
-        val parts = normalized.removePrefix("*").split("*")
+        // Strip pasted whitespace and URL-encoded hash, then build a canonical
+        // dial string. The native telephony API only receives digits, * and #.
+        val normalized = fullCode.trim().filterNot(Char::isWhitespace).replace("%23", "#", ignoreCase = true)
+        if (!Regex("""^\\*[A-Za-z0-9\\[\\]]+(?:\\*[A-Za-z0-9\\[\\]]+)*#?$""").matches(normalized)) return null
+        val parts = normalized.removePrefix("*").removeSuffix("#").split("*")
+        if (parts.isEmpty() || parts.any(String::isBlank)) return null
 
-        // Safaricom's *180 Live Menu path is reached by selecting 2, then 5,
-        // before supplying the verification phone number. Older saved offers
-        // may contain the reversed *180*5*2 prefix; never replay that stale
-        // ordering for the silent Live Menu preflight.
+        // Safaricom's Live Menu verification route is always 2 -> 5 -> phone.
         if (parts.firstOrNull() == "180") {
-            val hasPhoneMarker = parts.any {
-                it.equals("pn", true) || it.equals("[pn]", true)
-            }
-            val hasVerificationNumber = parts.any { it == VERIFICATION_PHONE_NUMBER }
-            if (hasPhoneMarker || hasVerificationNumber) {
-                return "*180*2*5*$VERIFICATION_PHONE_NUMBER#"
-            }
+            val hasPhone = parts.any { it.equals("pn", true) || it.equals("[pn]", true) || it == VERIFICATION_PHONE_NUMBER }
+            if (hasPhone) return "*180*2*5*$VERIFICATION_PHONE_NUMBER#"
         }
 
         val markerIndex = parts.indexOfFirst {
-            it.equals("pn", true) || it.equals("[pn]", true) ||
-                it.equals("position", true) || it.equals("[position]", true)
+            it.equals("pn", true) || it.equals("[pn]", true) || it.equals("position", true) || it.equals("[position]", true)
         }
-        if (markerIndex <= 0) {
-            // Some saved offers already contain the fixed verification number rather
-            // than the pn token. Truncate to that verification step so the first-screen
-            // menu is returned instead of executing a full multi-segment purchase.
-            val fixedNumberIndex = parts.indexOfFirst { it == VERIFICATION_PHONE_NUMBER }
-            return if (fixedNumberIndex > 0) {
-                "*${parts.take(fixedNumberIndex).joinToString("*")}*$VERIFICATION_PHONE_NUMBER#"
-            } else {
-                null
-            }
-        }
-
-        val prefix = parts.take(markerIndex).joinToString("*")
-        val marker = parts[markerIndex]
-        // A PN marker must be replaced with the configured verification number so
-        // the carrier returns the correct first menu for signature comparison.
-        // Position markers retain their historical prefix-only preview behavior.
-        return if (marker.equals("pn", true) || marker.equals("[pn]", true)) {
-            "*$prefix*$VERIFICATION_PHONE_NUMBER#"
+        val code = if (markerIndex > 0) {
+            val prefix = parts.take(markerIndex).joinToString("*")
+            val marker = parts[markerIndex]
+            if (marker.equals("pn", true) || marker.equals("[pn]", true)) "*$prefix*$VERIFICATION_PHONE_NUMBER#" else "*$prefix#"
         } else {
-            "*$prefix#"
+            val fixedIndex = parts.indexOfFirst { it == VERIFICATION_PHONE_NUMBER }
+            if (fixedIndex <= 0) return null
+            "*${parts.take(fixedIndex).joinToString("*")}*$VERIFICATION_PHONE_NUMBER#"
         }
+        return code.takeIf { Regex("""^\\*\\d+(?:\\*\\d+)*#$""").matches(it) }
     }
 
     fun menuOptions(response: String): List<Pair<Int, String>> {
