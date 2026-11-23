@@ -398,6 +398,12 @@ internal object UssdPerformanceDiagnostics {
                 "Root acquisition" to setOf("event.root_acquire", "root.window_root_retrieval", "root.source_lookup"),
                 "Field discovery" to setOf("field.discovery", "field.tree_scan", "field.focused_lookup", "field.common_id_lookup"),
                 "Input" to setOf("input.entry"),
+                "Send activation" to setOf("send.activation", "send.discovery"),
+                "Silent USSD validation" to setOf("silent.validation"),
+                "SIM resolution / binding" to setOf("silent.sim_resolution", "silent.sim_binding"),
+                "Native dial dispatch" to setOf("silent.dispatch"),
+                "Carrier callback wait" to setOf("silent.callback_wait"),
+                "Response parsing" to setOf("silent.response_parse"),
                 "Send acceptance" to setOf("send.accepted", "send.method_accepted"),
                 "Total processing" to setOf("total.local_processing"),
                 "Carrier usable response wait" to setOf("carrier.usable_response_wait")
