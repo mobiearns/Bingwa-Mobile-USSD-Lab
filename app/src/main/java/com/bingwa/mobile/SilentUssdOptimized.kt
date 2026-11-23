@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal fun describeSilentUssdFailureCode(code: Int): String = when (code) {
     TelephonyManager.USSD_RETURN_FAILURE ->
-        "USSD_RETURN_FAILURE (-1): Android could not complete the silent USSD request and supplied no carrier response text in onReceiveUssdResponseFailed(). If manual dialling works, verify SIM subscription binding, voice network service, and carrier support for app-originated TelephonyManager.sendUssdRequest()."
+        "USSD_RETURN_FAILURE (-1): Android reports that the USSD request did not complete. This code alone cannot distinguish a carrier/network or modem rejection from an OEM telephony-framework policy failure; AOSP PhoneInterfaceManager can also map a carrier-disallowed TelephonyManager USSD API request to -1. No response text was supplied. Compare CarrierConfig permission, request shape, subscription binding, and a manual dial test; this callback does not expose the lower-level modem cause."
     TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL ->
         "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service was unavailable; Android supplied no carrier response text."
     else ->
