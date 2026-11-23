@@ -59,15 +59,11 @@ object SilentUssdOptimized {
             return false
         }
 
-        val code = normaliseCode(ussdCode)
-        if (code.isBlank()) {
-            onFailure("USSD code is empty")
-            return false
-        }
-        // Keep the native API boundary strict too: every caller must provide a
-        // complete dial string, not a label, template marker, or formatted text.
-        if (!Regex("""\*\d+(?:\*\d+)*#""").matches(code)) {
-            onFailure("USSD code must contain only digits and * separators, with one final #.")
+        // Do not repair or rewrite a code at the Android boundary. The caller
+        // must provide the exact canonical dial string already validated upstream.
+        val code = canonicalSilentUssdDialString(ussdCode)
+        if (code == null) {
+            onFailure("USSD code is not canonical. Expected *digits*digits# with no spaces or extra characters.")
             return false
         }
 
@@ -277,13 +273,15 @@ object SilentUssdOptimized {
         timeoutRunnable = null
     }
 
-    private fun normaliseCode(raw: String): String {
-        val decoded = raw.trim().replace("%23", "#")
-        if (decoded.isBlank()) return ""
-        return when {
-            decoded.startsWith("*") && decoded.endsWith("#") -> decoded
-            decoded.startsWith("*") -> "$decoded#"
-            else -> decoded
-        }
-    }
+
+}
+
+
+/**
+ * Returns the original code only when it is already a pure Android dial string.
+ * This deliberately does not trim, decode, append '#', or remove characters.
+ */
+internal fun canonicalSilentUssdDialString(raw: String): String? {
+    if (raw.length !in 3..50) return null
+    return raw.takeIf { Regex("""^\\*[0-9]+(?:\\*[0-9]+)*#$""").matches(it) }
 }
