@@ -82,7 +82,7 @@ internal object UssdPerformanceDiagnostics {
         subscriptionBindingMatches: Boolean?
     ) {
         val category = when (failureCode) {
-            android.telephony.TelephonyManager.USSD_RETURN_FAILURE -> "USSD_RETURN_FAILURE (-1): generic Android public-API failure. It may occur before modem dispatch (for example, framework/carrier policy) or later in telephony/network handling; callback supplied no carrier response text and does not identify the failing layer."
+            android.telephony.TelephonyManager.USSD_RETURN_FAILURE -> "USSD_RETURN_FAILURE (-1): Android reports that the USSD request failed to complete. AOSP can also map a carrier/API-policy rejection to this same code, so this code alone cannot distinguish policy rejection from telephony/radio/network failure; no carrier response text was supplied."
             android.telephony.TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service unavailable"
             -3 -> "USSD_ERROR_NOT_ALLOWED (-3): Android rejected the request as not permitted"
             else -> "Unclassified Android USSD failure ($failureCode); Android public API does not define a more specific callback category for this value"
