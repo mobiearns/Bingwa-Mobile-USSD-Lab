@@ -67,8 +67,7 @@ internal object UssdPerformanceDiagnostics {
         val category = when (failureCode) {
             android.telephony.TelephonyManager.USSD_RETURN_FAILURE -> "USSD_RETURN_FAILURE (-1): framework/network/modem failure or carrier API policy rejection; callback supplied no carrier response text"
             android.telephony.TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service unavailable"
-            android.telephony.TelephonyManager.USSD_ERROR_NOT_ALLOWED -> "USSD_ERROR_NOT_ALLOWED (-3): request not allowed by Android security/policy"
-            else -> "Unclassified Android USSD failure ($failureCode)"
+            else -> "Unclassified Android USSD failure ($failureCode); Android public API does not define a more specific callback category for this value"
         }
         silentFirstResponseEvidence = "First app-visible callback: FAILURE; callback delay: ${elapsedMs}ms; result: $category; request echo matches: $requestEchoMatches; subscription binding matches: ${subscriptionBindingMatches ?: "not available"}; carrier response text: NOT PROVIDED BY ANDROID"
     }
