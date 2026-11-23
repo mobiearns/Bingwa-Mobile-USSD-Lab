@@ -68,12 +68,13 @@ internal object SimpleSignatureVerifier {
         if (suffix.any { !it.all(Char::isDigit) }) return null
 
         if (prefix.first() == "180") {
-            // Accept the two explicitly supported Safaricom menu paths, but
-            // preserve the saved order exactly. Reordering carrier menu steps can
-            // send the request to a different service and cause a network failure.
+            // Safaricom's working verification route is 180 -> 5 -> 2.
+            // Older saved offers may contain the incorrect 180 -> 2 -> 5 order.
+            // Always canonicalize both accepted legacy templates to the verified
+            // carrier sequence before the native silent-dial boundary.
             if (prefix != listOf("180", "2", "5") && prefix != listOf("180", "5", "2")) return null
             if (!isPhoneMarker(parts[markerIndex])) return null
-            return "*${prefix.joinToString("*")}*$VERIFICATION_PHONE_NUMBER#"
+            return "*180*5*2*$VERIFICATION_PHONE_NUMBER#"
         }
 
         val prefixCode = "*${prefix.joinToString("*")}"
