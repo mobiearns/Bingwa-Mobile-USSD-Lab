@@ -1,11 +1,16 @@
-<div align="center">
+# Bingwa Mobile
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+## Requirements
 
-  <h1>Built with AI Studio</h2>
+- JDK 17
+- Android Gradle Plugin 8.10.1
+- Gradle Wrapper 8.12
+- Android SDK Platform 36 (Build Tools 35.0.0)
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## Build and test
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+    ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 
-</div>
+The debug APK is generated at:
+
+`app/build/outputs/apk/debug/app-debug.apk`

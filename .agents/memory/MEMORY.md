@@ -1,0 +1,1 @@
+- [USSD input safety](ussd-input-safety.md) — only submit a current-step value after exact read-back from one `ACTION_SET_TEXT` write.

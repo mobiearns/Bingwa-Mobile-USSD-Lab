@@ -1,0 +1,173 @@
+name: Android release APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Release version name (optional, defaults to app/build.gradle.kts)'
+        required: false
+        default: ''
+      skip_tests:
+        description: 'Skip unit tests during build'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source and release tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve Android release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1. Determine base version from app/build.gradle.kts
+          CURRENT_VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          CURRENT_CODE="$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)"
+
+          if [[ -z "$CURRENT_VERSION" ]]; then
+            CURRENT_VERSION="1.1.50"
+          fi
+          if [[ -z "$CURRENT_CODE" ]]; then
+            CURRENT_CODE="85"
+          fi
+
+          echo "Found in build.gradle.kts: versionName=$CURRENT_VERSION versionCode=$CURRENT_CODE"
+
+          # 2. Check if a manual version override was provided via workflow_dispatch
+          OVERRIDE_VERSION="${{ inputs.version_name }}"
+          if [[ -n "$OVERRIDE_VERSION" ]]; then
+            TARGET_VERSION="$OVERRIDE_VERSION"
+            TARGET_CODE="$((CURRENT_CODE + 1))"
+            sed -i -E "s/versionName = \"[^\"]+\"/versionName = \"$TARGET_VERSION\"/" app/build.gradle.kts
+            sed -i -E "s/versionCode = [0-9]+/versionCode = $TARGET_CODE/" app/build.gradle.kts
+            echo "Using manual override version: $TARGET_VERSION (code $TARGET_CODE)"
+          else
+            # Check if this tag already exists on git remote
+            git fetch --tags --force || true
+            if git tag -l "v$CURRENT_VERSION" | grep -q "^v$CURRENT_VERSION$"; then
+              echo "Tag v$CURRENT_VERSION already exists; auto-incrementing patch version..."
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+              PATCH=$((PATCH + 1))
+              TARGET_VERSION="$MAJOR.$MINOR.$PATCH"
+              TARGET_CODE=$((CURRENT_CODE + 1))
+              sed -i -E "s/versionCode = [0-9]+/versionCode = $TARGET_CODE/" app/build.gradle.kts
+              sed -i -E "s/versionName = \"[^\"]+\"/versionName = \"$TARGET_VERSION\"/" app/build.gradle.kts
+              echo "Auto-incremented to: $TARGET_VERSION (code $TARGET_CODE)"
+            else
+              TARGET_VERSION="$CURRENT_VERSION"
+              TARGET_CODE="$CURRENT_CODE"
+              echo "Releasing existing target version: $TARGET_VERSION (code $TARGET_CODE)"
+            fi
+          fi
+
+          # 3. Attempt non-fatal git commit & push back to main branch
+          # If protected branches or token scope prevent push, DO NOT fail the build.
+          if ! git diff --quiet -- app/build.gradle.kts; then
+            echo "Version updated in app/build.gradle.kts. Attempting git commit..."
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app/build.gradle.kts
+            git commit -m "chore: prepare Android release v$TARGET_VERSION" || true
+
+            PUSHED=false
+            CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
+            for attempt in 1 2 3; do
+              if git push origin "HEAD:$CURRENT_BRANCH"; then
+                PUSHED=true
+                echo "Successfully pushed version bump to origin/$CURRENT_BRANCH."
+                break
+              else
+                echo "Warning: git push attempt $attempt failed (may be protected branch or restricted token permissions). Retrying..."
+                sleep 2
+              fi
+            done
+            if [[ "$PUSHED" != true ]]; then
+              echo "Notice: Could not push version commit back to repository branch (likely branch protection). Proceeding with APK release build anyway."
+            fi
+          fi
+
+          echo "version_name=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$TARGET_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Build and verify Android release
+        run: |
+          chmod +x ./gradlew
+          SKIP_TESTS="${{ inputs.skip_tests }}"
+          if [[ "$SKIP_TESTS" == "true" ]]; then
+            echo "Skipping unit tests as requested..."
+            ./gradlew --no-daemon assembleRelease --stacktrace
+          else
+            ./gradlew --no-daemon testDebugUnitTest assembleRelease --stacktrace
+          fi
+
+      - name: Prepare APK and release metadata
+        id: release
+        shell: bash
+        run: |
+          VERSION_NAME="${{ steps.version.outputs.version_name }}"
+          if [[ -z "$VERSION_NAME" ]]; then
+            VERSION_NAME="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          fi
+
+          # Search for any valid release or assembled APK
+          APK="$(find app/build/outputs/apk -type f -name '*.apk' ! -name '*unaligned*' ! -name '*androidTest*' | head -n 1)"
+          if [[ -z "$APK" ]]; then
+            echo "Error: No APK file found in app/build/outputs/apk!" >&2
+            find app/build/outputs -type f || true
+            exit 1
+          fi
+
+          echo "Found APK at: $APK"
+          mkdir -p release
+          cp "$APK" "release/bingwa-mobile-v${VERSION_NAME}.apk"
+          echo "Copied to release/bingwa-mobile-v${VERSION_NAME}.apk"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bingwa-mobile-v${{ steps.release.outputs.version_name }}
+          path: release/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: v${{ steps.release.outputs.version_name }}
+          target_commitish: ${{ github.sha }}
+          name: Bingwa Mobile v${{ steps.release.outputs.version_name }}
+          generate_release_notes: true
+          files: release/*.apk
+          make_latest: true

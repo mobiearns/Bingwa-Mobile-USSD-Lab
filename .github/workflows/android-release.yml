@@ -1,0 +1,324 @@
+name: Android release APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Release version name (optional, defaults to app/build.gradle.kts)'
+        required: false
+        default: ''
+      skip_tests:
+        description: 'Skip unit tests during build'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout source and release tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve Android release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1. Determine base version from app/build.gradle.kts
+          CURRENT_VERSION="$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          CURRENT_CODE="$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)"
+
+          if [[ -z "$CURRENT_VERSION" ]]; then
+            CURRENT_VERSION="1.1.50"
+          fi
+          if [[ -z "$CURRENT_CODE" ]]; then
+            CURRENT_CODE="85"
+          fi
+
+          echo "Found in build.gradle.kts: versionName=$CURRENT_VERSION versionCode=$CURRENT_CODE"
+
+          # 2. Check if a manual version override was provided via workflow_dispatch
+          OVERRIDE_VERSION="${{ inputs.version_name }}"
+          if [[ -n "$OVERRIDE_VERSION" ]]; then
+            TARGET_VERSION="$OVERRIDE_VERSION"
+            TARGET_CODE="$((CURRENT_CODE + 1))"
+            sed -i -E "s/versionName = \"[^\"]+\"/versionName = \"$TARGET_VERSION\"/" app/build.gradle.kts
+            sed -i -E "s/versionCode = [0-9]+/versionCode = $TARGET_CODE/" app/build.gradle.kts
+            echo "Using manual override version: $TARGET_VERSION (code $TARGET_CODE)"
+          else
+            # Check if this tag already exists on git remote
+            git fetch --tags --force || true
+            if git tag -l "v$CURRENT_VERSION" | grep -q "^v$CURRENT_VERSION$"; then
+              echo "Tag v$CURRENT_VERSION already exists; auto-incrementing patch version..."
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+              PATCH=$((PATCH + 1))
+              TARGET_VERSION="$MAJOR.$MINOR.$PATCH"
+              TARGET_CODE=$((CURRENT_CODE + 1))
+              sed -i -E "s/versionCode = [0-9]+/versionCode = $TARGET_CODE/" app/build.gradle.kts
+              sed -i -E "s/versionName = \"[^\"]+\"/versionName = \"$TARGET_VERSION\"/" app/build.gradle.kts
+              echo "Auto-incremented to: $TARGET_VERSION (code $TARGET_CODE)"
+            else
+              TARGET_VERSION="$CURRENT_VERSION"
+              TARGET_CODE="$CURRENT_CODE"
+              echo "Releasing existing target version: $TARGET_VERSION (code $TARGET_CODE)"
+            fi
+          fi
+
+          # 3. Attempt non-fatal git commit & push back to main branch
+          # If protected branches or token scope prevent push, DO NOT fail the build.
+          if ! git diff --quiet -- app/build.gradle.kts; then
+            echo "Version updated in app/build.gradle.kts. Attempting git commit..."
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add app/build.gradle.kts
+            git commit -m "chore: prepare Android release v$TARGET_VERSION" || true
+
+            PUSHED=false
+            CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
+            for attempt in 1 2 3; do
+              if git push origin "HEAD:$CURRENT_BRANCH"; then
+                PUSHED=true
+                echo "Successfully pushed version bump to origin/$CURRENT_BRANCH."
+                break
+              else
+                echo "Warning: git push attempt $attempt failed (may be protected branch or restricted token permissions). Retrying..."
+                sleep 2
+              fi
+            done
+            if [[ "$PUSHED" != true ]]; then
+              echo "Notice: Could not push version commit back to repository branch (likely branch protection). Proceeding with APK release build anyway."
+            fi
+          fi
+
+          echo "version_name=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$TARGET_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Build and verify Android release
+        run: |
+          chmod +x ./gradlew
+          SKIP_TESTS="${{ inputs.skip_tests }}"
+          if [[ "$SKIP_TESTS" == "true" ]]; then
+            echo "Skipping unit tests as requested..."
+            ./gradlew :app:assembleRelease --stacktrace --build-cache --configuration-cache --parallel
+          else
+            ./gradlew :app:testDebugUnitTest :app:assembleRelease --stacktrace --build-cache --configuration-cache --parallel
+          fi
+
+      - name: Prepare APK and release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_NAME="${{ steps.version.outputs.version_name }}"
+          VERSION_CODE="${{ steps.version.outputs.version_code }}"
+          [[ -n "$VERSION_NAME" ]] || { echo "Missing resolved version name" >&2; exit 1; }
+
+          # Find only APKs produced by the release variant; AGP may add flavor/output suffixes.
+          RELEASE_DIR="app/build/outputs/apk/release"
+          echo "Release output directory contents:"
+          find "$RELEASE_DIR" -maxdepth 3 -type f -print 2>/dev/null || true
+          mapfile -t APK_CANDIDATES < <(find "$RELEASE_DIR" -maxdepth 3 -type f -name '*.apk' ! -name '*unaligned*' | sort)
+          if [[ "${#APK_CANDIDATES[@]}" -ne 1 ]]; then
+            echo "Expected exactly one release APK, found ${#APK_CANDIDATES[@]}" >&2
+            find app/build/outputs -maxdepth 6 -type f -print || true
+            exit 1
+          fi
+          APK="${APK_CANDIDATES[0]}"
+          echo "Selected APK: $APK"
+          test -s "$APK"
+          SIZE="$(stat -c%s "$APK")"
+          echo "APK size: $SIZE bytes"
+          if [[ "$SIZE" -lt 5000000 ]]; then
+            echo "APK is unexpectedly small; refusing to publish" >&2
+            exit 1
+          fi
+
+          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+          AAPT="$BUILD_TOOLS/aapt"
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          for tool in "$APKSIGNER" "$AAPT" "$ZIPALIGN"; do
+            [[ -x "$tool" ]] || { echo "Required Android tool missing: $tool" >&2; exit 1; }
+          done
+
+          # APK must be a structurally sound ZIP, correctly aligned and cryptographically signed.
+          unzip -t "$APK"
+          "$ZIPALIGN" -c -v 4 "$APK"
+          SIGNATURE_REPORT="$("$APKSIGNER" verify --verbose --print-certs "$APK")"
+          echo "$SIGNATURE_REPORT"
+          # Verify every supported APK signature scheme before publishing.
+          # v1 keeps compatibility with older Android; v2/v3 cover modern Android.
+          for scheme in "v1" "v2" "v3"; do
+            if ! echo "$SIGNATURE_REPORT" | grep -Eqi "Verified using ${scheme} scheme.*true"; then
+              echo "APK is missing a verified ${scheme} signature." >&2
+              exit 1
+            fi
+          done
+          EXPECTED_CERT_SHA256="b9d7d7d90a52342613a218ea68f4404d7752fe9d4fb38a52ff5335a143210527"
+          ACTUAL_CERT_SHA256="$(echo "$SIGNATURE_REPORT" | sed -n 's/.*certificate SHA-256 digest: //Ip' | head -n 1 | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')"
+          if [[ "$ACTUAL_CERT_SHA256" != "$EXPECTED_CERT_SHA256" ]]; then
+            echo "Release signer mismatch. Expected $EXPECTED_CERT_SHA256, got ${ACTUAL_CERT_SHA256:-<missing>}." >&2
+            exit 1
+          fi
+          echo "Release signer fingerprint matches the stable Bingwa distribution certificate."
+          BADGING="$("$AAPT" dump badging "$APK")"
+          echo "$BADGING" | head -n 1
+          echo "$BADGING" | grep -F "package: name='com.bingwa.mobile' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'" >/dev/null || {
+            echo "APK package/version mismatch (expected com.bingwa.mobile $VERSION_NAME/$VERSION_CODE)" >&2
+            exit 1
+          }
+
+          mkdir -p release
+          DEST="release/bingwa-mobile-v${VERSION_NAME}.apk"
+          cp "$APK" "$DEST"
+          sha256sum "$DEST"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Release Gradle memory before Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Gradle daemons are no longer needed once the signed APK has been
+          # built and checked. Stop them before starting the memory-heavy AVD.
+          ./gradlew --stop || true
+          sleep 2
+          echo "Runner memory before emulator:"
+          free -h
+          echo "Top memory consumers:"
+          ps -eo pid,comm,rss,%mem --sort=-rss | head -n 12
+
+      - name: Reclaim runner disk space for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Disk space before cleanup:"
+          df -h /
+          # These preinstalled toolchains are not used by this Android/Kotlin project.
+          # Removing them frees the host filesystem space required to create userdata.img.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h /
+          AVAILABLE_KB="$(df -Pk / | awk 'NR==2 {print $4}')"
+          if [[ "$AVAILABLE_KB" -lt 8500000 ]]; then
+            echo "Insufficient free disk space for Android emulator userdata partition." >&2
+            exit 1
+          fi
+
+      - name: Enable KVM hardware acceleration for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm
+          fi
+          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+            echo "KVM device is missing or not accessible. Android x86_64 emulator requires KVM on this runner." >&2
+            ls -l /dev/kvm 2>/dev/null || true
+            id
+            exit 1
+          fi
+          echo "KVM is accessible:"
+          ls -l /dev/kvm
+
+      - name: Prepare Android 12 APK verification script
+        shell: bash
+        run: |
+          mkdir -p scripts
+          cat > scripts/verify-release-apk.sh <<'VERIFY_SCRIPT'
+          #!/bin/sh
+          set -eu
+          APK="$1"
+          echo "Emulator Android API: $(adb shell getprop ro.build.version.sdk)"
+          adb wait-for-device
+          BOOT=""
+          attempt=1
+          while [ "$attempt" -le 60 ]; do
+            BOOT="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+            [ "$BOOT" = "1" ] && break
+            sleep 5
+            attempt=$((attempt + 1))
+          done
+          BOOT="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+          if [ "$BOOT" != "1" ]; then
+            echo "Android emulator did not finish booting" >&2
+            adb devices -l || true
+            adb logcat -d -t 1000 || true
+            exit 1
+          fi
+          echo "Installing release APK on Android 12 emulator..."
+          if ! timeout 120s adb install --no-streaming "$APK"; then
+            echo "APK installation failed; collecting package-manager diagnostics" >&2
+            adb logcat -d -t 3000 | grep -iE 'PackageManager|installd|INSTALL_FAILED|PackageParser|PackageInstaller' | tail -n 250 || true
+            exit 1
+          fi
+          adb shell pm path com.bingwa.mobile
+          adb shell dumpsys package com.bingwa.mobile | grep -E 'versionName=|versionCode='
+          echo "Launching installed Bingwa Mobile..."
+          timeout 30s adb shell monkey -p com.bingwa.mobile 1
+          VERIFY_SCRIPT
+          chmod +x scripts/verify-release-apk.sh
+
+      - name: Install release APK on Android 12 emulator (required)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disk-size: 6G
+          # Keep the AVD within the memory budget of standard private-repo runners.
+          # Gradle daemons are stopped above before the emulator is launched.
+          ram-size: 2048M
+          heap-size: 512M
+          disable-animations: true
+          emulator-boot-timeout: 300
+          disable-linux-hw-accel: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: sh ./scripts/verify-release-apk.sh "release/bingwa-mobile-v${{ steps.release.outputs.version_name }}.apk"
+        timeout-minutes: 10
+
+      # Publishing is allowed only after the release APK has passed Gradle tests,
+      # ZIP/alignment/signature/certificate checks, metadata checks, and a real
+      # clean Android 12 install + launch on the emulator above.
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        if: success() && steps.release.outcome == 'success'
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: v${{ steps.release.outputs.version_name }}
+          target_commitish: ${{ github.sha }}
+          name: Bingwa Mobile v${{ steps.release.outputs.version_name }}
+          generate_release_notes: true
+          files: release/*.apk
+          make_latest: true
