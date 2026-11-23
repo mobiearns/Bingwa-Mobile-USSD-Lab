@@ -111,9 +111,6 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Native callback/API evidence: $silentUssdApiEvidence")
             appendLine("First callback classification: $silentFirstResponseEvidence")
             appendLine("Request code & phone number: redacted")
-            appendLine("Request shape (no values): $silentRequestProfileEvidence")
-            appendLine("Native callback/API evidence: $silentUssdApiEvidence")
-            appendLine("First callback classification: $silentFirstResponseEvidence")
         }
     }
 
@@ -147,6 +144,9 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Carrier retry-limit response: ${if (isCarrierRetryLimit) "Yes" else "No"}")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: No")
+            appendLine("Request shape (no values): $silentRequestProfileEvidence")
+            appendLine("Native callback/API evidence: $silentUssdApiEvidence")
+            appendLine("First callback classification: $silentFirstResponseEvidence")
             appendLine("Raw carrier response:")
             appendLine(if (safeResponse.isBlank()) "[Android returned an empty response]" else safeResponse)
             if (response.length > safeResponse.length) appendLine("[Response truncated in copy report at 6000 chars]")
@@ -173,6 +173,9 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Carrier retry-limit response: No")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: No")
+            appendLine("Request shape (no values): $silentRequestProfileEvidence")
+            appendLine("Native callback/API evidence: $silentUssdApiEvidence")
+            appendLine("First callback classification: $silentFirstResponseEvidence")
             appendLine("Failure detail: $error")
         }
     }
