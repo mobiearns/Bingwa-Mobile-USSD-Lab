@@ -561,22 +561,25 @@ object UssdHelper {
             ?: return "Carrier policy unavailable: Android returned no config for selected subscription"
         val allowKey = "allow_ussd_requests_via_telephony_manager_bool"
         val allowed = if (config.containsKey(allowKey)) config.getBoolean(allowKey) else null
-        val method = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val key = "carrier_ussd_method_int"
-            if (config.containsKey(key)) when (config.getInt(key)) {
-                0 -> "CS preferred"
-                1 -> "IMS preferred"
-                2 -> "CS only"
-                3 -> "IMS only"
-                else -> "unknown (${config.getInt(key)})"
-            } else "not exposed"
-        } else "not available on this Android version"
+        val methodKey = "carrier_ussd_method_int"
+        val methodValue = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && config.containsKey(methodKey)) {
+            runCatching { config.getInt(methodKey) }.getOrNull()
+        } else null
+        val method = when (methodValue) {
+            0 -> "CS preferred"
+            1 -> "IMS preferred"
+            2 -> "CS only"
+            3 -> "IMS only"
+            null -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "not exposed" else "not available on this Android version"
+            else -> "unknown"
+        }
         val allowText = when (allowed) {
             true -> "allowed"
             false -> "BLOCKED by carrier configuration"
             null -> "not exposed by carrier configuration"
         }
-        return "TelephonyManager USSD API: $allowText; carrier transport preference: $method"
+        val methodEvidence = if (methodValue != null) " (carrier_ussd_method_int=$methodValue)" else " (raw method unavailable)"
+        return "TelephonyManager USSD API: $allowText; carrier transport preference: $method$methodEvidence; config bundle present: true"
     }
 
     /**
@@ -623,6 +626,22 @@ object UssdHelper {
             }
         } ?: "unavailable"
         val voiceType = runCatching { bound.voiceNetworkType }.getOrNull()?.toString() ?: "unavailable"
+        val radioDetails = runCatching {
+            val currentService = bound.serviceState
+            val dataReg = currentService?.dataRegState?.let {
+                when (it) {
+                    ServiceState.STATE_IN_SERVICE -> "IN_SERVICE"
+                    ServiceState.STATE_OUT_OF_SERVICE -> "OUT_OF_SERVICE"
+                    ServiceState.STATE_EMERGENCY_ONLY -> "EMERGENCY_ONLY"
+                    ServiceState.STATE_POWER_OFF -> "POWER_OFF"
+                    else -> "UNKNOWN($it)"
+                }
+            } ?: "unavailable"
+            val roaming = currentService?.roaming?.toString() ?: "unavailable"
+            val dataType = bound.dataNetworkType
+            val phoneType = bound.phoneType
+            "data service: $dataReg; data network type: $dataType; roaming: $roaming; phone type: $phoneType"
+        }.getOrElse { "additional radio state unavailable (${it.javaClass.simpleName})" }
         val carrierName = runCatching {
             bound.simOperatorName?.trim().takeUnless { it.isNullOrBlank() }
                 ?: bound.networkOperatorName?.trim().takeUnless { it.isNullOrBlank() }
@@ -631,7 +650,7 @@ object UssdHelper {
             runCatching { SubscriptionManager.getDefaultVoiceSubscriptionId() == subId }.getOrDefault(false)
         } else true
         val slot = slotIndex?.plus(1)?.toString() ?: "unknown"
-        return "SIM slot: $slot ($carrierName); default voice SIM: $isDefaultVoice; active subscription: $activeSub; binding verified: $boundIdMatches; SIM state: $simState; voice service: $serviceState; voice network type: $voiceType; CALL_PHONE=$callPerm"
+        return "SIM slot: $slot ($carrierName); default voice SIM: $isDefaultVoice; active subscription: $activeSub; binding verified: $boundIdMatches; SIM state: $simState; voice service: $serviceState; voice network type: $voiceType; $radioDetails; READ_PHONE_STATE=$phonePerm; CALL_PHONE=$callPerm"
     }
 
     private fun selectedTelephonyManager(context: Context, subIdOverride: Int? = null): TelephonyManager? {
