@@ -48,7 +48,7 @@ internal object SimpleSignatureVerifier {
         // Strip pasted whitespace and URL-encoded hash, then build a canonical
         // dial string. The native telephony API only receives digits, * and #.
         val normalized = fullCode.trim().filterNot(Char::isWhitespace).replace("%23", "#", ignoreCase = true)
-        if (!Regex("""^\\*[A-Za-z0-9\\[\\]]+(?:\\*[A-Za-z0-9\\[\\]]+)*#?$""").matches(normalized)) return null
+        if (!Regex("""^\*[A-Za-z0-9\[\]]+(?:\*[A-Za-z0-9\[\]]+)*#?$""").matches(normalized)) return null
         val parts = normalized.removePrefix("*").removeSuffix("#").split("*")
         if (parts.isEmpty() || parts.any(String::isBlank)) return null
 
@@ -70,7 +70,7 @@ internal object SimpleSignatureVerifier {
             if (fixedIndex <= 0) return null
             "*${parts.take(fixedIndex).joinToString("*")}*$VERIFICATION_PHONE_NUMBER#"
         }
-        return code.takeIf { Regex("""^\\*\\d+(?:\\*\\d+)*#$""").matches(it) }
+        return code.takeIf { Regex("""^\*\d+(?:\*\d+)*#$""").matches(it) }
     }
 
     fun menuOptions(response: String): List<Pair<Int, String>> {
