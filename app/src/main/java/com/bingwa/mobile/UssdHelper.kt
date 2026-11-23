@@ -129,10 +129,16 @@ object UssdHelper {
             }
         }
 
+        val simResolutionStartedAt = UssdPerformanceDiagnostics.mark()
         val targets = resolveUssdSimTargets(
             context,
             selectionOverride = subIdOverride,
             forceRefresh = silentOnly
+        )
+        UssdPerformanceDiagnostics.record(
+            "silent.sim_resolution",
+            simResolutionStartedAt,
+            "targetCount=${targets.size} selectedSlot=${targets.firstOrNull()?.slotIndex?.plus(1) ?: 0} explicitSelection=${subIdOverride != null} silent=${silentOnly}"
         )
         if (targets.isEmpty()) {
             val activeSims = getAvailableSims(context, forceRefresh = true)
@@ -182,8 +188,14 @@ object UssdHelper {
             return false
         }
 
+        val bindingStartedAt = UssdPerformanceDiagnostics.mark()
         val readinessError = validateSubscriptionForSilentUssd(context, target)
         val tm = if (readinessError == null) selectedTelephonyManager(context, target.subId) else null
+        UssdPerformanceDiagnostics.record(
+            "silent.sim_binding",
+            bindingStartedAt,
+            "slot=${target.slotIndex + 1} ready=${readinessError == null} managerBound=${tm != null} subscriptionIdRedacted=true"
+        )
         if (tm == null) {
             val reason = readinessError ?: "Telephony subscription is unavailable on the selected SIM"
             return if (!silentOnly && attemptIndex + 1 < targets.size) {
