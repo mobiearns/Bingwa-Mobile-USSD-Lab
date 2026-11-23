@@ -46,17 +46,22 @@ internal fun selectLiveMenuSourceOffer(
     offers: List<OfferItem>,
     selectedOfferId: Int
 ): OfferItem? {
+    // Live Menu is exclusively the silent Simple-signature preflight source.
+    // Even if the user last selected an Advanced offer elsewhere in Signature
+    // Management, never send that offer's unrelated verification code here.
     val selected = offers.firstOrNull {
-        it.id == selectedOfferId && SimpleSignatureVerifier.previewCode(it.ussdCode) != null
+        it.id == selectedOfferId &&
+            normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE &&
+            SimpleSignatureVerifier.previewCode(it.ussdCode) != null
     }
     if (selected != null) return selected
 
-    // Default to a Simple-mode offer first (e.g. *180*5*2*pn*5*1#) rather than
-    // cheaper Advanced SMS/Minutes offers (e.g. *188*10*1*1*pn*1*2#).
+    // Fall back only to another eligible Simple-mode offer. Advanced offers
+    // must never be used as a silent Live Menu source.
     return offers.firstOrNull {
         normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE &&
             SimpleSignatureVerifier.previewCode(it.ussdCode) != null
-    } ?: offers.firstOrNull { SimpleSignatureVerifier.previewCode(it.ussdCode) != null }
+    }
 }
 
 internal fun redactPreviewPattern(previewCode: String): String {
