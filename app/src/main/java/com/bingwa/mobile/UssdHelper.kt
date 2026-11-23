@@ -640,7 +640,11 @@ object UssdHelper {
             val roaming = currentService?.roaming?.toString() ?: "unavailable"
             val dataType = bound.dataNetworkType
             val phoneType = bound.phoneType
-            "data service: $dataReg; data network type: $dataType; roaming: $roaming; phone type: $phoneType"
+            val simOperatorNumeric = runCatching { bound.simOperator }.getOrNull().orEmpty().ifBlank { "unavailable" }
+            val networkOperatorNumeric = runCatching { bound.networkOperator }.getOrNull().orEmpty().ifBlank { "unavailable" }
+            val simOperatorName = runCatching { bound.simOperatorName }.getOrNull().orEmpty().ifBlank { "unavailable" }
+            val networkOperatorName = runCatching { bound.networkOperatorName }.getOrNull().orEmpty().ifBlank { "unavailable" }
+            "data service: $dataReg; data network type: $dataType; roaming: $roaming; phone type: $phoneType; SIM operator: $simOperatorName ($simOperatorNumeric); registered network operator: $networkOperatorName ($networkOperatorNumeric)"
         }.getOrElse { "additional radio state unavailable (${it.javaClass.simpleName})" }
         val carrierName = runCatching {
             bound.simOperatorName?.trim().takeUnless { it.isNullOrBlank() }
