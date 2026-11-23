@@ -82,6 +82,7 @@ object SilentUssdOptimized {
         }
 
         val requestId = requestCounter.incrementAndGet()
+        UssdPerformanceDiagnostics.recordNativeRequestStarted(requestId)
         Log.d(TAG, "Starting native silent USSD request #$requestId on SDK ${Build.VERSION.SDK_INT}")
 
         synchronized(this) {
@@ -138,6 +139,7 @@ object SilentUssdOptimized {
                 isProcessing.set(false)
             }
         }
+        UssdPerformanceDiagnostics.recordNativeRequestFinished(requestId, "SYNCHRONOUS_DISPATCH_EXCEPTION")
         runCatching { onFailure(launchResult) }
         return false
     }
@@ -232,7 +234,7 @@ object SilentUssdOptimized {
                         "outcome=failure failureCode=$failureCode"
                     )
                     Log.w(TAG, "onReceiveUssdResponseFailed for req #$requestId: failureCode=$failureCode")
-                    deliverFailure(requestId, describeSilentUssdFailureCode(failureCode))
+                    deliverFailure(requestId, describeSilentUssdFailureCode(failureCode), failureCode)
                 }
             }, handler)
             null
@@ -330,6 +332,7 @@ object SilentUssdOptimized {
     }
 
     private fun deliverSuccess(requestId: Long, response: String) {
+        UssdPerformanceDiagnostics.recordNativeRequestFinished(requestId, "CALLBACK_SUCCESS")
         val cb = synchronized(this) {
             if (requestId != activeRequestId) {
                 Log.d(TAG, "Ignoring stale USSD success for requestId=$requestId")
@@ -352,6 +355,11 @@ object SilentUssdOptimized {
     }
 
     private fun deliverFailure(requestId: Long, reason: String) {
+        val outcome = when {
+            reason.contains("timeout", ignoreCase = true) -> "APP_TIMEOUT_NO_CALLBACK"
+            else -> "APP_FAILURE"
+        }
+        UssdPerformanceDiagnostics.recordNativeRequestFinished(requestId, outcome)
         val cb = synchronized(this) {
             if (requestId != activeRequestId) {
                 Log.d(TAG, "Ignoring stale USSD failure for requestId=$requestId")
