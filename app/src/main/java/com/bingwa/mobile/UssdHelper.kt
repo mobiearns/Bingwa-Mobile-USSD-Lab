@@ -628,15 +628,17 @@ object UssdHelper {
         val voiceType = runCatching { bound.voiceNetworkType }.getOrNull()?.toString() ?: "unavailable"
         val radioDetails = runCatching {
             val currentService = bound.serviceState
-            val dataReg = currentService?.dataRegistrationState?.let {
-                when (it) {
-                    ServiceState.STATE_IN_SERVICE -> "IN_SERVICE"
-                    ServiceState.STATE_OUT_OF_SERVICE -> "OUT_OF_SERVICE"
-                    ServiceState.STATE_EMERGENCY_ONLY -> "EMERGENCY_ONLY"
-                    ServiceState.STATE_POWER_OFF -> "POWER_OFF"
-                    else -> "UNKNOWN($it)"
-                }
-            } ?: "unavailable"
+            val dataReg = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                currentService?.dataRegistrationState?.let {
+                    when (it) {
+                        ServiceState.STATE_IN_SERVICE -> "IN_SERVICE"
+                        ServiceState.STATE_OUT_OF_SERVICE -> "OUT_OF_SERVICE"
+                        ServiceState.STATE_EMERGENCY_ONLY -> "EMERGENCY_ONLY"
+                        ServiceState.STATE_POWER_OFF -> "POWER_OFF"
+                        else -> "UNKNOWN($it)"
+                    }
+                } ?: "unavailable"
+            } else "not available on this Android version"
             val roaming = currentService?.roaming?.toString() ?: "unavailable"
             val dataType = bound.dataNetworkType
             val phoneType = bound.phoneType
