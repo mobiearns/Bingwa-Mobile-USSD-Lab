@@ -154,6 +154,7 @@ class SignatureLiveMenuCoordinatorTest {
         )
         val report = formatLiveMenuDiagnosticsSummary(retryState)
         assertTrue(report.contains("Request method: Android TelephonyManager.sendUssdRequest"))
+        assertTrue(report.contains("Menu source (redacted):"))
         assertTrue(report.contains("Selected SIM slot & status: SIM slot 1"))
         assertTrue(report.contains("Request duration: 540 ms"))
         assertTrue(report.contains("Callback outcome: CALLBACK SUCCESS · CARRIER RETRY LIMIT"))
@@ -163,5 +164,28 @@ class SignatureLiveMenuCoordinatorTest {
         assertTrue(report.contains("Previous valid menu retained: Yes (3 options)"))
         assertTrue(report.contains("Blocked due to running request: No"))
         assertTrue(report.contains("Max Number of Menu Retries is Reached"))
+    }
+
+    @Test fun liveMenuDefaultsToSimpleOfferInsteadOfCheaperAdvancedOffer() {
+        val advancedSms = OfferItem(
+            id = 0,
+            name = "20 SMS Daily",
+            price = 5,
+            ussdCode = "*188*10*1*1*pn*1*2#",
+            category = OFFER_CATEGORY_SMS,
+            executionMode = OFFER_EXECUTION_MODE_ADVANCED
+        )
+        val simpleData = OfferItem(
+            id = 1,
+            name = "1GB 1 Hour",
+            price = 19,
+            ussdCode = "*180*5*2*pn*5*1#",
+            category = OFFER_CATEGORY_DATA,
+            executionMode = OFFER_EXECUTION_MODE_SIMPLE
+        )
+
+        val picked = selectLiveMenuSourceOffer(listOf(advancedSms, simpleData), selectedOfferId = -1)
+        assertEquals(1, picked?.id)
+        assertEquals("*180*5*2*[pn]#", redactPreviewPattern(SimpleSignatureVerifier.previewCode(simpleData.ussdCode).orEmpty()))
     }
 }

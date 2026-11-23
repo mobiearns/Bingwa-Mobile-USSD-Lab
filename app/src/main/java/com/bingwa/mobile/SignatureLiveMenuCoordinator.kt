@@ -34,11 +34,35 @@ internal data class SignatureLiveMenuState(
     val simDescription: String = "Not inspected yet",
     val telephonyReadiness: String = "Not inspected yet",
     val carrierConfig: String = "Not inspected yet",
-    val sourceOfferName: String = ""
+    val sourceOfferName: String = "",
+    val sourceSummary: String = "Not selected"
 ) {
     val hasValidMenu: Boolean get() = validOptions.isNotEmpty()
     val hasDiagnosticIssue: Boolean
         get() = !loading && (lastAttemptError.isNotBlank() || blockedBecauseRunning)
+}
+
+internal fun selectLiveMenuSourceOffer(
+    offers: List<OfferItem>,
+    selectedOfferId: Int
+): OfferItem? {
+    val selected = offers.firstOrNull {
+        it.id == selectedOfferId && SimpleSignatureVerifier.previewCode(it.ussdCode) != null
+    }
+    if (selected != null) return selected
+
+    // Default to a Simple-mode offer first (e.g. *180*5*2*pn*5*1#) rather than
+    // cheaper Advanced SMS/Minutes offers (e.g. *188*10*1*1*pn*1*2#).
+    return offers.firstOrNull {
+        normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE &&
+            SimpleSignatureVerifier.previewCode(it.ussdCode) != null
+    } ?: offers.firstOrNull { SimpleSignatureVerifier.previewCode(it.ussdCode) != null }
+}
+
+internal fun redactPreviewPattern(previewCode: String): String {
+    val trimmed = previewCode.trim()
+    if (trimmed.isBlank()) return "none"
+    return trimmed.replace(Regex("07\\d{8}"), "[pn]")
 }
 
 internal fun reduceLiveMenuStart(
@@ -47,7 +71,8 @@ internal fun reduceLiveMenuStart(
     simDescription: String,
     telephonyReadiness: String,
     carrierConfig: String,
-    sourceOfferName: String
+    sourceOfferName: String,
+    sourceSummary: String = previous.sourceSummary
 ): SignatureLiveMenuState = previous.copy(
     // Never discard the last valid menu when starting a refresh.
     loading = true,
@@ -58,7 +83,8 @@ internal fun reduceLiveMenuStart(
     simDescription = simDescription,
     telephonyReadiness = telephonyReadiness,
     carrierConfig = carrierConfig,
-    sourceOfferName = sourceOfferName
+    sourceOfferName = sourceOfferName,
+    sourceSummary = sourceSummary
 )
 
 internal fun reduceLiveMenuSuccess(
@@ -201,6 +227,7 @@ internal fun secondsUntilNextAutoRefresh(
 
 internal fun formatLiveMenuDiagnosticsSummary(state: SignatureLiveMenuState): String = buildString {
     appendLine("Request method: ${state.lastAttemptMethod}")
+    appendLine("Menu source (redacted): ${state.sourceSummary}")
     appendLine("Selected SIM slot & status: ${state.simDescription}")
     appendLine("Telephony readiness: ${state.telephonyReadiness}")
     appendLine("Carrier USSD policy: ${state.carrierConfig}")
@@ -274,22 +301,38 @@ internal object SignatureLiveMenuCoordinator {
         val liveMenuSim = SignatureStudioStore.liveMenuSim(appContext)
 
         // The live-menu workspace resolves its silent verification code from an
-        // eligible offer's PN template (or saved verification code), never from free input.
-        val sourceOffer = offers.firstOrNull {
-            it.id == selectedOfferId && SimpleSignatureVerifier.previewCode(it.ussdCode) != null
-        } ?: offers.firstOrNull { SimpleSignatureVerifier.previewCode(it.ussdCode) != null }
+        // eligible Simple-mode offer first (or custom saved template), never from free input.
+        val sourceOffer = selectLiveMenuSourceOffer(offers, selectedOfferId)
         val sourceCode = sourceOffer?.ussdCode ?: liveMenuCode
         val preview = SimpleSignatureVerifier.previewCode(sourceCode)
-        val selectedSim = sourceOffer?.simSelection?.takeUnless { it == OFFER_SIM_USE_GENERAL }
-            ?: liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
+        val sourceSummary = buildString {
+            append(sourceOffer?.name?.ifBlank { "Custom" } ?: "Saved live-menu code")
+            if (!preview.isNullOrBlank()) {
+                append(" (")
+                append(redactPreviewPattern(preview))
+                append(")")
+            }
+        }
+        val selectedSim = liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
+            ?: sourceOffer?.simSelection?.takeUnless { it == OFFER_SIM_USE_GENERAL }
 
+        val sims = getAvailableSims(appContext, forceRefresh = true)
         val resolvedTarget = resolveUssdSimTargets(
             appContext,
             selectionOverride = selectedSim,
             forceRefresh = true
         ).firstOrNull()
-        val simDescription = resolvedTarget?.let { "SIM slot ${it.slotIndex + 1} (subscription ID redacted)" }
-            ?: "No active SIM resolved for current selection"
+        val matchedCarrier = resolvedTarget?.let { target ->
+            sims.firstOrNull { it.subscriptionId == target.subId }
+                ?.let { info ->
+                    val display = info.displayName?.toString()?.trim().orEmpty()
+                    if (display.isNotBlank()) display else null
+                }
+        }
+        val simDescription = resolvedTarget?.let {
+            val carrierSuffix = matchedCarrier?.let { name -> " · $name" }.orEmpty()
+            "SIM slot ${it.slotIndex + 1}$carrierSuffix (subscription ID redacted)"
+        } ?: "No active SIM resolved for current selection"
         val carrierConfig = UssdHelper.describeSilentUssdCarrierConfig(appContext, resolvedTarget?.subId)
         val telephonyReadiness = UssdHelper.describeSilentUssdReadiness(
             appContext,
@@ -308,14 +351,15 @@ internal object SignatureLiveMenuCoordinator {
                     simDescription = simDescription,
                     telephonyReadiness = telephonyReadiness,
                     carrierConfig = carrierConfig
-                )
+                ).copy(sourceSummary = sourceSummary)
                 _state.value = blockedState
                 UssdPerformanceDiagnostics.recordSilentSignatureMenuBlocked(
                     reason = blockedMessage,
                     simDescription = simDescription,
                     carrierConfig = carrierConfig,
                     telephonyReadiness = telephonyReadiness,
-                    previousMenuRetained = blockedState.previousMenuRetained
+                    previousMenuRetained = blockedState.previousMenuRetained,
+                    sourceSummary = sourceSummary
                 )
                 return false
             }
@@ -327,7 +371,8 @@ internal object SignatureLiveMenuCoordinator {
                         simDescription = simDescription,
                         telephonyReadiness = telephonyReadiness,
                         carrierConfig = carrierConfig,
-                        sourceOfferName = sourceOffer?.name.orEmpty()
+                        sourceOfferName = sourceOffer?.name.orEmpty(),
+                        sourceSummary = sourceSummary
                     ),
                     error = reason,
                     elapsedMs = 0L,
@@ -351,7 +396,8 @@ internal object SignatureLiveMenuCoordinator {
                 simDescription = simDescription,
                 telephonyReadiness = telephonyReadiness,
                 carrierConfig = carrierConfig,
-                sourceOfferName = sourceOffer?.name.orEmpty()
+                sourceOfferName = sourceOffer?.name.orEmpty(),
+                sourceSummary = sourceSummary
             )
             _state.value = startedState
             UssdPerformanceDiagnostics.recordSilentSignatureMenuStarted(
@@ -359,7 +405,8 @@ internal object SignatureLiveMenuCoordinator {
                 sdk = Build.VERSION.SDK_INT,
                 carrierConfig = carrierConfig,
                 telephonyReadiness = telephonyReadiness,
-                previousMenuRetained = startedState.hasValidMenu
+                previousMenuRetained = startedState.hasValidMenu,
+                sourceSummary = sourceSummary
             )
         }
 

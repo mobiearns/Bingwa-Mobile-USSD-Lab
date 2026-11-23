@@ -30,6 +30,7 @@ internal object UssdPerformanceDiagnostics {
     @Volatile private var lastSilentSimRouting: String = "not captured"
     @Volatile private var lastSilentTelephonyReadiness: String = "not captured"
     @Volatile private var lastSilentCarrierConfig: String = "not captured"
+    @Volatile private var lastSilentSourceSummary: String = "not captured"
     @Volatile private var lastSilentAndroidSdk: Int = -1
 
     fun latestSilentSignatureMenuReport(): String = silentSignatureMenuReport
@@ -40,14 +41,17 @@ internal object UssdPerformanceDiagnostics {
         sdk: Int,
         carrierConfig: String = "not inspected",
         telephonyReadiness: String = "not inspected",
-        previousMenuRetained: Boolean = false
+        previousMenuRetained: Boolean = false,
+        sourceSummary: String = "not captured"
     ) {
         lastSilentSimRouting = simDescription
         lastSilentTelephonyReadiness = telephonyReadiness
         lastSilentCarrierConfig = carrierConfig
+        lastSilentSourceSummary = sourceSummary
         lastSilentAndroidSdk = sdk
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $simDescription")
             appendLine("Telephony readiness: $telephonyReadiness")
             appendLine("Carrier telephony USSD policy: $carrierConfig")
@@ -78,6 +82,7 @@ internal object UssdPerformanceDiagnostics {
         }
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $lastSilentSimRouting")
             appendLine("Telephony readiness: $lastSilentTelephonyReadiness")
             appendLine("Carrier telephony USSD policy: $lastSilentCarrierConfig")
@@ -106,6 +111,7 @@ internal object UssdPerformanceDiagnostics {
     ) {
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $lastSilentSimRouting")
             appendLine("Telephony readiness: $lastSilentTelephonyReadiness")
             appendLine("Carrier telephony USSD policy: $lastSilentCarrierConfig")
@@ -126,14 +132,17 @@ internal object UssdPerformanceDiagnostics {
         simDescription: String,
         carrierConfig: String,
         telephonyReadiness: String,
-        previousMenuRetained: Boolean
+        previousMenuRetained: Boolean,
+        sourceSummary: String = lastSilentSourceSummary
     ) {
         lastSilentSimRouting = simDescription
         lastSilentTelephonyReadiness = telephonyReadiness
         lastSilentCarrierConfig = carrierConfig
+        lastSilentSourceSummary = sourceSummary
         lastSilentAndroidSdk = Build.VERSION.SDK_INT
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $simDescription")
             appendLine("Telephony readiness: $telephonyReadiness")
             appendLine("Carrier telephony USSD policy: $carrierConfig")

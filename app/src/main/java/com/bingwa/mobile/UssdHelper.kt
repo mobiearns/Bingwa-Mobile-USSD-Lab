@@ -603,8 +603,15 @@ object UssdHelper {
             }
         } ?: "unavailable"
         val voiceType = runCatching { bound.voiceNetworkType }.getOrNull()?.toString() ?: "unavailable"
+        val carrierName = runCatching {
+            bound.simOperatorName?.trim().takeUnless { it.isNullOrBlank() }
+                ?: bound.networkOperatorName?.trim().takeUnless { it.isNullOrBlank() }
+        }.getOrNull() ?: "unknown carrier"
+        val isDefaultVoice = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            runCatching { SubscriptionManager.getDefaultVoiceSubscriptionId() == subId }.getOrDefault(false)
+        } else true
         val slot = slotIndex?.plus(1)?.toString() ?: "unknown"
-        return "SIM slot: $slot; active subscription: $activeSub; binding verified: $boundIdMatches; SIM state: $simState; voice service: $serviceState; voice network type: $voiceType; CALL_PHONE=$callPerm"
+        return "SIM slot: $slot ($carrierName); default voice SIM: $isDefaultVoice; active subscription: $activeSub; binding verified: $boundIdMatches; SIM state: $simState; voice service: $serviceState; voice network type: $voiceType; CALL_PHONE=$callPerm"
     }
 
     private fun selectedTelephonyManager(context: Context, subIdOverride: Int? = null): TelephonyManager? {

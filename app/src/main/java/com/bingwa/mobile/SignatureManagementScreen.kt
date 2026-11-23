@@ -83,10 +83,9 @@ fun SignatureManagementScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var offers by remember { mutableStateOf(OfferRepository.load(context)) }
     var selectedId by remember {
-        mutableIntStateOf(
-            offers.firstOrNull { SimpleSignatureVerifier.previewCode(it.ussdCode) != null }?.id ?: -1
-        )
+        mutableIntStateOf(selectLiveMenuSourceOffer(offers, -1)?.id ?: -1)
     }
+    var liveMenuSim by remember { mutableIntStateOf(SignatureStudioStore.liveMenuSim(context)) }
     var tab by rememberSaveable { mutableStateOf(SignatureManagementTab.LIVE_MENU) }
     val live by SignatureLiveMenuCoordinator.state.collectAsState()
     var activity by remember { mutableStateOf(SignatureActivityStore.load(context)) }
@@ -254,6 +253,22 @@ fun SignatureManagementScreen(onBack: () -> Unit) {
                         state = live,
                         offers = offers,
                         selectedOfferId = selectedId,
+                        selectedSim = liveMenuSim,
+                        onSelectOffer = { newOfferId ->
+                            selectedId = newOfferId
+                            SignatureLiveMenuCoordinator.refresh(
+                                context = context,
+                                offers = offers,
+                                selectedOfferId = newOfferId,
+                                forceManual = true
+                            )
+                            secondsToSync = SignatureLiveMenuCoordinator.secondsUntilNextAutoRefresh()
+                        },
+                        onSelectSim = { simSelection ->
+                            liveMenuSim = simSelection
+                            SignatureStudioStore.setLiveMenuSim(context, simSelection)
+                            refreshLiveMenu()
+                        },
                         onRefresh = ::refreshLiveMenu
                     ) { position, label ->
                         val offer = OfferRepository.findById(context, selectedId)
@@ -633,6 +648,9 @@ private fun SignatureLiveMenuPanel(
     state: SignatureLiveMenuState,
     offers: List<OfferItem>,
     selectedOfferId: Int,
+    selectedSim: Int,
+    onSelectOffer: (Int) -> Unit,
+    onSelectSim: (Int) -> Unit,
     onRefresh: () -> Unit,
     onSavePosition: (Int, String) -> Unit
 ) {
@@ -741,7 +759,9 @@ private fun SignatureLiveMenuPanel(
                                 letterSpacing = .8.sp
                             )
                             DiagnosticRow("Method", state.lastAttemptMethod)
+                            DiagnosticRow("Menu source", state.sourceSummary)
                             DiagnosticRow("Selected SIM", state.simDescription)
+                            DiagnosticRow("Readiness", state.telephonyReadiness)
                             DiagnosticRow("Duration", "${state.lastAttemptDurationMs} ms")
                             DiagnosticRow("Callback outcome", state.lastAttemptOutcome)
                             DiagnosticRow(
@@ -916,6 +936,14 @@ private fun SignatureLiveMenuPanel(
                             fontSize = 10.sp
                         )
                     }
+                    if (state.sourceSummary != "Not selected") {
+                        Text(
+                            "Source: ${state.sourceSummary}",
+                            color = SignatureStudioColors.t3,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
                 SignatureStatusPill(
                     label = when {
@@ -932,6 +960,57 @@ private fun SignatureLiveMenuPanel(
                 IconButton(onClick = onRefresh, enabled = !state.loading, modifier = Modifier.size(40.dp)) {
                     if (state.loading) CircularProgressIndicator(Modifier.size(18.dp), color = SignatureStudioColors.cyan, strokeWidth = 2.dp)
                     else Icon(Icons.Rounded.Refresh, "Manual refresh menu", tint = SignatureStudioColors.cyan)
+                }
+            }
+        }
+
+        val detectedSims = remember(selectedSim) { getAvailableSims(context) }
+        val eligibleOffers = remember(offers) {
+            offers.filter { SimpleSignatureVerifier.previewCode(it.ussdCode) != null }
+                .sortedBy {
+                    if (normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE) 0 else 1
+                }
+        }
+        val activeSourceOffer = selectLiveMenuSourceOffer(offers, selectedOfferId)
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val simOptions = buildList {
+                    add(OFFER_SIM_USE_GENERAL to "App default SIM")
+                    val slot1 = detectedSims.firstOrNull { it.simSlotIndex == 0 }
+                    val slot2 = detectedSims.firstOrNull { it.simSlotIndex == 1 }
+                    add(USSD_SIM_SELECTION_SLOT_1 to ("SIM 1" + (slot1?.displayName?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")))
+                    add(USSD_SIM_SELECTION_SLOT_2 to ("SIM 2" + (slot2?.displayName?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")))
+                }
+                simOptions.forEach { (simValue, simLabel) ->
+                    val active = selectedSim == simValue
+                    FilterChip(
+                        selected = active,
+                        enabled = !state.loading,
+                        onClick = { onSelectSim(simValue) },
+                        label = { Text(simLabel, fontSize = 10.sp, maxLines = 1) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = SignatureStudioColors.cyan.copy(alpha = .15f),
+                            selectedLabelColor = SignatureStudioColors.cyan
+                        )
+                    )
+                }
+            }
+            if (eligibleOffers.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    eligibleOffers.forEach { item ->
+                        val active = item.id == activeSourceOffer?.id
+                        val modeTag = if (normalizeOfferExecutionMode(item.executionMode, item.category) == OFFER_EXECUTION_MODE_SIMPLE) "Simple" else "Adv"
+                        FilterChip(
+                            selected = active,
+                            enabled = !state.loading,
+                            onClick = { onSelectOffer(item.id) },
+                            label = { Text("${item.name} ($modeTag)", fontSize = 10.sp, maxLines = 1) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = SignatureStudioColors.amber.copy(alpha = .16f),
+                                selectedLabelColor = SignatureStudioColors.amber
+                            )
+                        )
+                    }
                 }
             }
         }
