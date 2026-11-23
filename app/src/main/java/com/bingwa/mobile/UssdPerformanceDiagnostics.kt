@@ -32,6 +32,11 @@ internal object UssdPerformanceDiagnostics {
     @Volatile private var lastSilentCarrierConfig: String = "not captured"
     @Volatile private var lastSilentSourceSummary: String = "not captured"
     @Volatile private var lastSilentAndroidSdk: Int = -1
+    @Volatile private var silentUssdApiEvidence: String = "No native callback evidence captured yet."
+
+    fun recordSilentApiEvidence(detail: String) {
+        silentUssdApiEvidence = detail.replace(Regex("[\\r\\n]+"), " ").take(240)
+    }
 
     fun latestSilentSignatureMenuReport(): String = silentSignatureMenuReport
 
@@ -386,6 +391,10 @@ internal object UssdPerformanceDiagnostics {
             appendLine()
             appendLine("SIGNATURE MANAGEMENT · SILENT LIVE MENU CAPTURE")
             appendLine(silentSignatureMenuReport)
+            appendLine()
+            appendLine("SILENT USSD API EVIDENCE")
+            appendLine(silentUssdApiEvidence)
+            appendLine("Privacy: request contents and subscription identifiers are not included; only request shape and equality checks are recorded.")
             appendLine()
             appendLine("ADAPTIVE SEND LEARNING")
             appendLine(UssdAdaptiveSendMemory(context).buildReportSummary())
