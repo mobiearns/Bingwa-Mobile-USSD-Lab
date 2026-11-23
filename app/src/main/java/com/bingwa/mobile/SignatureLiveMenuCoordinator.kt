@@ -196,7 +196,7 @@ internal fun secondsUntilNextAutoRefresh(
     if (state.autoRefreshPausedByCarrierLimit) return 0
     if (state.lastAttemptAt <= 0L) return (intervalMs / 1_000L).toInt()
     val remainingMs = (intervalMs - (nowMs - state.lastAttemptAt)).coerceAtLeast(0L)
-    return (remainingMs / 1_000L).toInt()
+    return (remainingMs / 1_000L + if (remainingMs % 1_000L == 0L) 0L else 1L).toInt()
 }
 
 internal fun formatLiveMenuDiagnosticsSummary(state: SignatureLiveMenuState): String = buildString {
