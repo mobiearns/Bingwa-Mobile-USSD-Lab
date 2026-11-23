@@ -33,9 +33,44 @@ internal object UssdPerformanceDiagnostics {
     @Volatile private var lastSilentSourceSummary: String = "not captured"
     @Volatile private var lastSilentAndroidSdk: Int = -1
     @Volatile private var silentUssdApiEvidence: String = "No native callback evidence captured yet."
+    @Volatile private var silentFirstResponseEvidence: String = "No callback received yet."
 
     fun recordSilentApiEvidence(detail: String) {
-        silentUssdApiEvidence = detail.replace(Regex("[\\r\\n]+"), " ").take(240)
+        silentUssdApiEvidence = detail.replace(Regex("[\\r\\n]+"), " ").take(500)
+    }
+
+    fun recordSilentFirstResponse(
+        response: String,
+        elapsedMs: Long,
+        requestEchoMatches: Boolean,
+        subscriptionBindingMatches: Boolean?
+    ) {
+        val options = runCatching { SimpleSignatureVerifier.menuOptions(response).size }.getOrDefault(0)
+        val lower = response.lowercase(Locale.ROOT)
+        val kind = when {
+            response.isBlank() -> "EMPTY RESPONSE"
+            SimpleSignatureVerifier.isCarrierRetryLimitResponse(response) -> "CARRIER RETRY-LIMIT MESSAGE"
+            options > 0 -> "CARRIER MENU"
+            listOf("enter", "reply", "select", "choose", "confirm", "option").any { lower.contains(it) } -> "CARRIER INPUT/PROMPT"
+            listOf("failed", "failure", "error", "not allowed", "unavailable", "invalid").any { lower.contains(it) } -> "CARRIER ERROR MESSAGE"
+            else -> "CARRIER TEXT RESPONSE (UNCLASSIFIED)"
+        }
+        silentFirstResponseEvidence = "First app-visible response: $kind; callback delay: ${elapsedMs}ms; response characters: ${response.length}; parsed menu options: $options; request echo matches: $requestEchoMatches; subscription binding matches: ${subscriptionBindingMatches ?: "not available"}"
+    }
+
+    fun recordSilentFirstFailure(
+        failureCode: Int,
+        elapsedMs: Long,
+        requestEchoMatches: Boolean,
+        subscriptionBindingMatches: Boolean?
+    ) {
+        val category = when (failureCode) {
+            android.telephony.TelephonyManager.USSD_RETURN_FAILURE -> "USSD_RETURN_FAILURE (-1): framework/network/modem failure or carrier API policy rejection; callback supplied no carrier response text"
+            android.telephony.TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service unavailable"
+            android.telephony.TelephonyManager.USSD_ERROR_NOT_ALLOWED -> "USSD_ERROR_NOT_ALLOWED (-3): request not allowed by Android security/policy"
+            else -> "Unclassified Android USSD failure ($failureCode)"
+        }
+        silentFirstResponseEvidence = "First app-visible callback: FAILURE; callback delay: ${elapsedMs}ms; result: $category; request echo matches: $requestEchoMatches; subscription binding matches: ${subscriptionBindingMatches ?: "not available"}; carrier response text: NOT PROVIDED BY ANDROID"
     }
 
     fun latestSilentSignatureMenuReport(): String = silentSignatureMenuReport
@@ -392,9 +427,13 @@ internal object UssdPerformanceDiagnostics {
             appendLine("SIGNATURE MANAGEMENT · SILENT LIVE MENU CAPTURE")
             appendLine(silentSignatureMenuReport)
             appendLine()
+            appendLine("FIRST CARRIER RESPONSE / FIRST APP-VISIBLE CALLBACK")
+            appendLine(silentFirstResponseEvidence)
+            appendLine("Important: sendUssdRequest exposes the completed response callback, not intermediate modem signalling. If Android calls failure without text, the exact carrier-side first message is unavailable to this app.")
+            appendLine()
             appendLine("SILENT USSD API EVIDENCE")
             appendLine(silentUssdApiEvidence)
-            appendLine("Privacy: request contents and subscription identifiers are not included; only request shape and equality checks are recorded.")
+            appendLine("Privacy: request contents and subscription identifiers are not included in diagnostic metadata. Successful raw carrier response remains available in the response section below.")
             appendLine()
             appendLine("ADAPTIVE SEND LEARNING")
             appendLine(UssdAdaptiveSendMemory(context).buildReportSummary())
