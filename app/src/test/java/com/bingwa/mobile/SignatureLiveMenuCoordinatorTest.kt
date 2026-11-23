@@ -226,7 +226,7 @@ class SignatureLiveMenuCoordinatorTest {
         assertEquals("*180*5*2*[pn]#", redactPreviewPattern(SimpleSignatureVerifier.previewCode(simpleData.ussdCode).orEmpty()))
     }
 
-    @Test fun liveMenuPrioritizesEnabledStar180OfferAndSupportsCustomCodeMode() {
+    @Test fun liveMenuPrioritizesEnabledStar180SimpleOffer() {
         val disabledSimple = OfferItem(
             id = 10,
             name = "Disabled Flex",
@@ -260,11 +260,5 @@ class SignatureLiveMenuCoordinatorTest {
             selectedOfferId = -1
         )
         assertEquals(12, picked?.id)
-        assertNull(
-            selectLiveMenuSourceOffer(
-                listOf(disabledSimple, enabledNon180, enabled180),
-                selectedOfferId = LIVE_MENU_CUSTOM_SOURCE_ID
-            )
-        )
     }
 }

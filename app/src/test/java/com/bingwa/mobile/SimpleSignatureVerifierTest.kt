@@ -26,6 +26,7 @@ class SimpleSignatureVerifierTest {
         assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*[pn]*1#"))
         assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*pn*5*1#"))
         assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678#"))
+        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678*5*1#"))
     }
 
     @Test fun positionMarkerKeepsPrefixOnlyPreview() {

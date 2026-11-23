@@ -47,8 +47,14 @@ internal object SimpleSignatureVerifier {
         }
         if (markerIndex <= 0) {
             // Some saved offers already contain the fixed verification number rather
-            // than the pn token. In that case the complete code is the silent preflight.
-            return "$normalized#".takeIf { parts.lastOrNull() == VERIFICATION_PHONE_NUMBER }
+            // than the pn token. Truncate to that verification step so the first-screen
+            // menu is returned instead of executing a full multi-segment purchase.
+            val fixedNumberIndex = parts.indexOfFirst { it == VERIFICATION_PHONE_NUMBER }
+            return if (fixedNumberIndex > 0) {
+                "*${parts.take(fixedNumberIndex).joinToString("*")}*$VERIFICATION_PHONE_NUMBER#"
+            } else {
+                null
+            }
         }
 
         val prefix = parts.take(markerIndex).joinToString("*")
