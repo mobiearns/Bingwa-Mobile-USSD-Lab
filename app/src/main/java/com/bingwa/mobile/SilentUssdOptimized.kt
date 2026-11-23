@@ -16,6 +16,8 @@ internal fun describeSilentUssdFailureCode(code: Int): String = when (code) {
         "USSD_RETURN_FAILURE (-1): generic Android public-API failure. It may occur before modem dispatch (for example, framework/carrier policy) or later in telephony/network handling; callback supplied no carrier response text and does not identify the failing layer."
     TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL ->
         "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service was unavailable; Android supplied no carrier response text."
+    -3 ->
+        "USSD_ERROR_NOT_ALLOWED (-3): Android reports that this caller/request is not permitted; Android supplied no carrier response text."
     else ->
         "Android USSD failure code ($code); Android supplied no carrier response text."
 }
@@ -91,6 +93,7 @@ object SilentUssdOptimized {
         }
 
         val dispatchStartedAt = UssdPerformanceDiagnostics.mark()
+        UssdPerformanceDiagnostics.recordSilentTelephonySnapshot("PRE_DISPATCH", describeTelephonyRuntime(telephonyManager))
         val selectedSubscriptionId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             runCatching { telephonyManager.subscriptionId }.getOrNull()
         } else null
@@ -114,6 +117,7 @@ object SilentUssdOptimized {
                 dispatchStartedAt,
                 "api=TelephonyManager.sendUssdRequest accepted=true codeChars=${code.length} segments=${code.count { it == '*' }} simBound=true retries=0"
             )
+            UssdPerformanceDiagnostics.recordSilentTelephonySnapshot("API_RETURNED_ACCEPTED", describeTelephonyRuntime(telephonyManager))
             Log.d(TAG, "Native TelephonyManager.sendUssdRequest started for req #$requestId")
             return true
         }
@@ -168,6 +172,7 @@ object SilentUssdOptimized {
                         runCatching { telephonyManager.subscriptionId }.getOrNull()
                     } else null
                     val requestEchoMatches = request == code
+                    UssdPerformanceDiagnostics.recordSilentTelephonySnapshot("CALLBACK_SUCCESS", describeTelephonyRuntime(telephonyManager))
                     val bindingMatches = if (selectedSubscriptionId != null && callbackSubscriptionId != null) {
                         selectedSubscriptionId == callbackSubscriptionId
                     } else null
@@ -201,6 +206,7 @@ object SilentUssdOptimized {
                         runCatching { telephonyManager.subscriptionId }.getOrNull()
                     } else null
                     val requestEchoMatches = request == code
+                    UssdPerformanceDiagnostics.recordSilentTelephonySnapshot("CALLBACK_FAILURE", describeTelephonyRuntime(telephonyManager))
                     val bindingMatches = if (selectedSubscriptionId != null && callbackSubscriptionId != null) {
                         selectedSubscriptionId == callbackSubscriptionId
                     } else null
@@ -238,6 +244,46 @@ object SilentUssdOptimized {
             "Unable to start TelephonyManager.sendUssdRequest(): ${e.message ?: e.javaClass.simpleName}"
         }
     }
+
+    /**
+     * Public-API-only snapshot around the request. It cannot prove modem dispatch,
+     * but it can show whether SIM/service/voice-network state changed before callback.
+     * No subscription IDs, phone numbers, or USSD text are included.
+     */
+    private fun describeTelephonyRuntime(tm: TelephonyManager): String = runCatching {
+        val sim = runCatching { tm.simState }.getOrNull()?.let { state ->
+            when (state) {
+                TelephonyManager.SIM_STATE_READY -> "READY"
+                TelephonyManager.SIM_STATE_ABSENT -> "ABSENT"
+                TelephonyManager.SIM_STATE_PIN_REQUIRED -> "PIN_REQUIRED"
+                TelephonyManager.SIM_STATE_PUK_REQUIRED -> "PUK_REQUIRED"
+                TelephonyManager.SIM_STATE_NETWORK_LOCKED -> "NETWORK_LOCKED"
+                TelephonyManager.SIM_STATE_NOT_READY -> "NOT_READY"
+                else -> "OTHER($state)"
+            }
+        } ?: "unavailable"
+        val service = runCatching { tm.serviceState }.getOrNull()
+        val serviceCode = service?.state
+        val serviceName = when (serviceCode) {
+            android.telephony.ServiceState.STATE_IN_SERVICE -> "IN_SERVICE"
+            android.telephony.ServiceState.STATE_OUT_OF_SERVICE -> "OUT_OF_SERVICE"
+            android.telephony.ServiceState.STATE_EMERGENCY_ONLY -> "EMERGENCY_ONLY"
+            android.telephony.ServiceState.STATE_POWER_OFF -> "POWER_OFF"
+            null -> "unavailable"
+            else -> "OTHER($serviceCode)"
+        }
+        val voiceType = runCatching { tm.voiceNetworkType }.getOrNull()?.toString() ?: "unavailable"
+        val dataType = runCatching { tm.dataNetworkType }.getOrNull()?.toString() ?: "unavailable"
+        val callState = runCatching { tm.callState }.getOrNull()?.let { state ->
+            when (state) {
+                TelephonyManager.CALL_STATE_IDLE -> "IDLE"
+                TelephonyManager.CALL_STATE_RINGING -> "RINGING"
+                TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
+                else -> "OTHER($state)"
+            }
+        } ?: "unavailable"
+        "sim=$sim service=$serviceName roaming=${service?.roaming ?: "unavailable"} voiceNetworkType=$voiceType dataNetworkType=$dataType phoneType=${runCatching { tm.phoneType }.getOrNull() ?: "unavailable"} callState=$callState"
+    }.getOrElse { "snapshot unavailable (${it.javaClass.simpleName})" }
 
     private fun extractUssdPopupResponse(rawResponse: String): String {
         if (rawResponse.isBlank()) return ""
