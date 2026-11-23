@@ -94,13 +94,25 @@ object UssdHelper {
             }
         }
 
-        val validationError = validateUssdCode(ussdCode)
-        if (validationError != null) {
-            Log.e("UssdHelper", "USSD validation failed: $validationError")
-            deliverOnceFailure(validationError)
-            return false
+        // Silent signature requests must cross this boundary unchanged.
+        // Do not trim, decode %23, append '#', or otherwise "repair" them here.
+        // Visible/manual legacy flows retain their existing normalisation.
+        val code = if (silentOnly) {
+            canonicalSilentUssdDialString(ussdCode) ?: run {
+                val reason = "Silent USSD code is not canonical. Expected an unchanged *digits*digits# string."
+                Log.e("UssdHelper", "Silent USSD validation failed: $reason")
+                deliverOnceFailure(reason)
+                return false
+            }
+        } else {
+            val validationError = validateUssdCode(ussdCode)
+            if (validationError != null) {
+                Log.e("UssdHelper", "USSD validation failed: $validationError")
+                deliverOnceFailure(validationError)
+                return false
+            }
+            normalizeUssdCode(ussdCode)
         }
-        val code = normalizeUssdCode(ussdCode)
 
         if (silentOnly) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
