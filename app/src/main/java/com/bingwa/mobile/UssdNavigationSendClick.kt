@@ -272,10 +272,18 @@ internal class UssdNavigationSendClick(private val service: UssdNavigationServic
     }
 
     private fun executeReliableClick(node: AccessibilityNodeInfo): Boolean {
+        val activationStartedAt = UssdPerformanceDiagnostics.mark()
         if (runCatching {
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }.getOrDefault(false)
-        ) return true
+        ) {
+            UssdPerformanceDiagnostics.record(
+                "send.activation",
+                activationStartedAt,
+                "method=node_ACTION_CLICK accepted=true"
+            )
+            return true
+        }
 
         // On many OEM dialers (Transsion/Samsung/Xiaomi), action text is nested in a clickable container.
         // Checking clickable ancestors first executes in <0.5ms directly via Binder without gesture delays.
@@ -285,6 +293,11 @@ internal class UssdNavigationSendClick(private val service: UssdNavigationServic
             val p = current
             if (runCatching { p.isClickable && p.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)) {
                 p.recycle()
+                UssdPerformanceDiagnostics.record(
+                    "send.activation",
+                    activationStartedAt,
+                    "method=clickable_ancestor_ACTION_CLICK accepted=true"
+                )
                 return true
             }
             val nextParent = runCatching { p.parent }.getOrNull()
@@ -295,9 +308,19 @@ internal class UssdNavigationSendClick(private val service: UssdNavigationServic
         runCatching { current?.recycle() }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && dispatchTapGesture(node)) {
+            UssdPerformanceDiagnostics.record(
+                "send.activation",
+                activationStartedAt,
+                "method=dispatchGesture_tap accepted=true"
+            )
             return true
         }
 
+        UssdPerformanceDiagnostics.record(
+            "send.activation",
+            activationStartedAt,
+            "method=none accepted=false"
+        )
         return false
     }
 
