@@ -57,15 +57,18 @@ object UssdHelper {
      * Returns null if valid, or an error message if invalid.
      */
     fun validateUssdCode(code: String): String? {
-        val trimmed = code.trim()
+        val trimmed = code.trim().replace("%23", "#", ignoreCase = true)
         if (trimmed.isBlank()) return "USSD code is empty"
         if (!trimmed.startsWith("*")) return "USSD code must start with '*'"
         if (!trimmed.endsWith("#")) return "USSD code must end with '#'"
         if (trimmed.length < 3) return "USSD code too short (minimum *#)"
         if (trimmed.length > 50) return "USSD code too long (maximum 50 chars)"
+        // Validate the WHOLE dial string, not merely a matching substring.
+        // Silent verification requests must never pass labels, spaces, quotes,
+        // brackets, line breaks, or any other decoration to Android telephony.
         val validPattern = Regex("^[*#\\d]+$")
-        if (!validPattern.containsMatchIn(trimmed.replace("pn", "", ignoreCase = true))) {
-            return "USSD code contains invalid characters (only digits, *, #, 'pn' allowed)"
+        if (!validPattern.matches(trimmed)) {
+            return "USSD code contains invalid characters (only digits, *, and # are allowed)"
         }
         val inner = trimmed.substring(1, trimmed.length - 1)
         if (!Regex("\\d").containsMatchIn(inner)) {
