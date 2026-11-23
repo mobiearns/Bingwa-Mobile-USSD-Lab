@@ -24,9 +24,9 @@ class SimpleSignatureVerifierTest {
     @Test fun previewUsesConfiguredPhoneNumberForPnVerification() {
         assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*pn*1#"))
         assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*[pn]*1#"))
-        assertEquals("*180*2*5*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*pn*5*1#"))
-        assertEquals("*180*2*5*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678#"))
-        assertEquals("*180*2*5*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678*5*1#"))
+        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*pn*5*1#"))
+        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678#"))
+        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678*5*1#"))
     }
 
 
@@ -36,13 +36,13 @@ class SimpleSignatureVerifierTest {
             SimpleSignatureVerifier.previewCode("*180*2*5*pn*1*2#")
         )
         assertEquals(
-            "*180*2*5*0712345678#",
+            "*180*5*2*0712345678#",
             SimpleSignatureVerifier.previewCode("*180*5*2*pn*1*2#")
         )
     }
 
     @Test fun previewStripsFormattingAndRejectsDecoratedDialStrings() {
-        assertEquals("*180*2*5*0712345678#", SimpleSignatureVerifier.previewCode("  *180 * 5 * 2 * pn #  "))
+        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("  *180 * 5 * 2 * pn #  "))
         assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*pn%23"))
         assertNull(SimpleSignatureVerifier.previewCode("Dial *180*2*5*pn# now"))
         assertNull(SimpleSignatureVerifier.previewCode("*180*2*5*pn# extra"))
