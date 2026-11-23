@@ -41,6 +41,21 @@ internal object SimpleSignatureVerifier {
         val normalized = fullCode.trim().replace("%23", "#").trimEnd('#')
         if (!normalized.startsWith("*")) return null
         val parts = normalized.removePrefix("*").split("*")
+
+        // Safaricom's *180 Live Menu path is reached by selecting 2, then 5,
+        // before supplying the verification phone number. Older saved offers
+        // may contain the reversed *180*5*2 prefix; never replay that stale
+        // ordering for the silent Live Menu preflight.
+        if (parts.firstOrNull() == "180") {
+            val hasPhoneMarker = parts.any {
+                it.equals("pn", true) || it.equals("[pn]", true)
+            }
+            val hasVerificationNumber = parts.any { it == VERIFICATION_PHONE_NUMBER }
+            if (hasPhoneMarker || hasVerificationNumber) {
+                return "*180*2*5*$VERIFICATION_PHONE_NUMBER#"
+            }
+        }
+
         val markerIndex = parts.indexOfFirst {
             it.equals("pn", true) || it.equals("[pn]", true) ||
                 it.equals("position", true) || it.equals("[position]", true)
