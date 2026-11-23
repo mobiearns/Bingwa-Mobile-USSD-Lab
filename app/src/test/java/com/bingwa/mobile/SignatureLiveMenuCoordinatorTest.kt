@@ -78,6 +78,25 @@ class SignatureLiveMenuCoordinatorTest {
         assertEquals(prior.lastSuccessAt, afterRetryLimit.lastSuccessAt)
     }
 
+    @Test fun safaricomServiceErrorIsClassifiedAndRawResponseIsPreserved() {
+        val raw = "Dear Agent, the Subscriber Registration function has been deactivated. Kindly use the Jiandikishe App for Sim Activation"
+        val started = reduceLiveMenuStart(
+            previous = SignatureLiveMenuState(),
+            startedAtWallMs = 1_800_000L,
+            simDescription = "SIM slot 1 · Safaricom",
+            telephonyReadiness = "READY",
+            carrierConfig = "USSD API allowed",
+            sourceOfferName = "1GB Daily"
+        )
+        val state = reduceLiveMenuSuccess(started, raw, emptyList(), 1_758L, 1_801_758L)
+        assertEquals("CALLBACK SUCCESS · SAFARICOM ERROR RESPONSE", state.lastAttemptOutcome)
+        assertTrue(state.isSafaricomServiceError)
+        assertTrue(state.lastAttemptError.startsWith("SAFARICOM ERROR RESPONSE:"))
+        assertEquals(raw, state.lastAttemptRawResponse)
+        assertTrue(formatLiveMenuDiagnosticsSummary(state).contains(raw))
+        assertTrue(state.rawResponseReceived)
+        assertEquals(0, state.validOptions.size)
+    }
     @Test fun failureCallbackWithoutResponseTextRetainsPriorMenuAndReportsHonestly() {
         val prior = sampleValidState(nowMs = 1_000_000L)
         val started = reduceLiveMenuStart(
