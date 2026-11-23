@@ -560,7 +560,10 @@ object UssdHelper {
         val config = runCatching { manager.getConfigForSubId(subId) }.getOrNull()
             ?: return "Carrier policy unavailable: Android returned no config for selected subscription"
         val allowKey = "allow_ussd_requests_via_telephony_manager_bool"
-        val allowed = if (config.containsKey(allowKey)) config.getBoolean(allowKey) else null
+        val allowKeyPresent = config.containsKey(allowKey)
+        // AOSP PhoneInterfaceManager checks getBoolean(key), whose absent-key default is false.
+        // Report both the raw key presence and the effective value used by that check.
+        val effectiveAllowed = runCatching { config.getBoolean(allowKey) }.getOrNull()
         val methodKey = "carrier_ussd_method_int"
         val methodValue = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && config.containsKey(methodKey)) {
             runCatching { config.getInt(methodKey) }.getOrNull()
@@ -573,13 +576,13 @@ object UssdHelper {
             null -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "not exposed" else "not available on this Android version"
             else -> "unknown"
         }
-        val allowText = when (allowed) {
-            true -> "allowed"
-            false -> "BLOCKED by carrier configuration"
-            null -> "not exposed by carrier configuration"
+        val allowText = when (effectiveAllowed) {
+            true -> "EFFECTIVELY ALLOWED"
+            false -> if (allowKeyPresent) "BLOCKED (explicit false)" else "BLOCKED BY FRAMEWORK DEFAULT (key absent; getBoolean defaults false)"
+            null -> "UNKNOWN (could not read boolean)"
         }
         val methodEvidence = if (methodValue != null) " (carrier_ussd_method_int=$methodValue)" else " (raw method unavailable)"
-        return "TelephonyManager USSD API: $allowText; carrier transport preference: $method$methodEvidence; config bundle present: true"
+        return "TelephonyManager USSD policy: $allowText; allow-key-present=$allowKeyPresent; effective-allow=$effectiveAllowed; transport preference: $method$methodEvidence; config bundle present: true"
     }
 
     /**
