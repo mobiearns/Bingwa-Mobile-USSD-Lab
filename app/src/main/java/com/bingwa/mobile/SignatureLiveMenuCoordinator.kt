@@ -480,7 +480,13 @@ internal object SignatureLiveMenuCoordinator {
                     if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
                     val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
                     val completedWall = System.currentTimeMillis()
+                    val parseStartedAt = UssdPerformanceDiagnostics.mark()
                     val options = SimpleSignatureVerifier.menuOptions(response)
+                    UssdPerformanceDiagnostics.record(
+                        "silent.response_parse",
+                        parseStartedAt,
+                        "responseChars=${response.length} parsedOptions=${options.size} classification=${if (options.isNotEmpty()) "menu" else "non_menu_response"}"
+                    )
                     val updated = synchronized(lock) {
                         requestInFlight = false
                         val next = reduceLiveMenuSuccess(
