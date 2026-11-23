@@ -33,7 +33,12 @@ internal object UssdPerformanceDiagnostics {
     @Volatile private var lastSilentSourceSummary: String = "not captured"
     @Volatile private var lastSilentAndroidSdk: Int = -1
     @Volatile private var silentUssdApiEvidence: String = "No native callback evidence captured yet."
+    @Volatile private var silentRequestProfileEvidence: String = "No silent request profile captured yet."
     @Volatile private var silentFirstResponseEvidence: String = "No callback received yet."
+
+    fun recordSilentRequestProfile(detail: String) {
+        silentRequestProfileEvidence = detail.replace(Regex("[\\r\\n]+"), " ").take(500)
+    }
 
     fun recordSilentApiEvidence(detail: String) {
         silentUssdApiEvidence = detail.replace(Regex("[\\r\\n]+"), " ").take(500)
@@ -65,7 +70,7 @@ internal object UssdPerformanceDiagnostics {
         subscriptionBindingMatches: Boolean?
     ) {
         val category = when (failureCode) {
-            android.telephony.TelephonyManager.USSD_RETURN_FAILURE -> "USSD_RETURN_FAILURE (-1): framework/network/modem failure or carrier API policy rejection; callback supplied no carrier response text"
+            android.telephony.TelephonyManager.USSD_RETURN_FAILURE -> "USSD_RETURN_FAILURE (-1): generic Android public-API failure. It may occur before modem dispatch (for example, framework/carrier policy) or later in telephony/network handling; callback supplied no carrier response text and does not identify the failing layer."
             android.telephony.TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service unavailable"
             else -> "Unclassified Android USSD failure ($failureCode); Android public API does not define a more specific callback category for this value"
         }
@@ -102,7 +107,13 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Carrier retry-limit response: No")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: No")
+            appendLine("Request shape (no values): $silentRequestProfileEvidence")
+            appendLine("Native callback/API evidence: $silentUssdApiEvidence")
+            appendLine("First callback classification: $silentFirstResponseEvidence")
             appendLine("Request code & phone number: redacted")
+            appendLine("Request shape (no values): $silentRequestProfileEvidence")
+            appendLine("Native callback/API evidence: $silentUssdApiEvidence")
+            appendLine("First callback classification: $silentFirstResponseEvidence")
         }
     }
 
@@ -193,6 +204,9 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Carrier retry-limit response: No")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: Yes")
+            appendLine("Request shape (no values): $silentRequestProfileEvidence")
+            appendLine("Native callback/API evidence: $silentUssdApiEvidence")
+            appendLine("First callback classification: $silentFirstResponseEvidence")
             appendLine("Detail: $reason")
         }
     }
