@@ -587,7 +587,7 @@ internal object SignatureLiveMenuCoordinator {
                             next
                         }
                         UssdPerformanceDiagnostics.recordSilentSignatureMenuBlocked(
-                            reason = next.lastAttemptError,
+                            reason = updated.lastAttemptError,
                             simDescription = simDescription,
                             carrierConfig = carrierConfig,
                             telephonyReadiness = telephonyReadiness,
