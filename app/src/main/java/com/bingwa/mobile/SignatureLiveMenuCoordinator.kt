@@ -527,14 +527,14 @@ internal object SignatureLiveMenuCoordinator {
             UssdFallbackVariant("v10_retryAfterMaxDelay_0790993046", "*180*5*2*0790993046#", "0790993046"),
         )
 
-        private val fallbackHandler = Handler(Looper.getMainLooper())
+        val fallbackHandler = Handler(Looper.getMainLooper())
 
         /**
          * Delay (ms) to wait before dispatching the fallback variant at the given
          * index. Longer delays give UNISOC's telephony service time to clear any
          * stranded pending MMI from the previous -1 before the next attempt.
          */
-        private fun delayBeforeVariant(variantIndex: Int): Long = when (variantIndex) {
+        fun delayBeforeVariant(variantIndex: Int): Long = when (variantIndex) {
             0, 5 -> 0L      // first attempt of each phone number: immediate
             1, 6 -> 500L    // no-leading-zero variant: short delay
             2, 7 -> 1000L   // first delayed retry: 1 second
