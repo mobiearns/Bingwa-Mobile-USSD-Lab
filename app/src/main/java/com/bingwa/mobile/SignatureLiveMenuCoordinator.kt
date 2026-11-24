@@ -37,6 +37,9 @@ internal data class SignatureLiveMenuState(
     val previousMenuRetained: Boolean = false,
     val blockedBecauseRunning: Boolean = false,
     val autoRefreshPausedByCarrierLimit: Boolean = false,
+    // A native -1 callback has no public cause/response text. Pause background retries,
+    // but let an explicit user refresh make one fresh silent API attempt.
+    val autoRefreshPausedByNativeFailure: Boolean = false,
     val simDescription: String = "Not inspected yet",
     val telephonyReadiness: String = "Not inspected yet",
     val carrierConfig: String = "Not inspected yet",
@@ -101,7 +104,8 @@ internal fun reduceLiveMenuStart(
     telephonyReadiness = telephonyReadiness,
     carrierConfig = carrierConfig,
     sourceOfferName = sourceOfferName,
-    sourceSummary = sourceSummary
+    sourceSummary = sourceSummary,
+    autoRefreshPausedByNativeFailure = false
 )
 
 internal fun reduceLiveMenuSuccess(
@@ -130,7 +134,8 @@ internal fun reduceLiveMenuSuccess(
             isSafaricomServiceError = false,
             previousMenuRetained = false,
             blockedBecauseRunning = false,
-            autoRefreshPausedByCarrierLimit = false
+            autoRefreshPausedByCarrierLimit = false,
+            autoRefreshPausedByNativeFailure = false
         )
     }
 
@@ -152,7 +157,8 @@ internal fun reduceLiveMenuSuccess(
             isSafaricomServiceError = false,
             previousMenuRetained = retained,
             blockedBecauseRunning = false,
-            autoRefreshPausedByCarrierLimit = true
+            autoRefreshPausedByCarrierLimit = true,
+            autoRefreshPausedByNativeFailure = false
         )
     }
 
@@ -178,7 +184,8 @@ internal fun reduceLiveMenuSuccess(
         isSafaricomServiceError = safaricomServiceError,
         previousMenuRetained = retained,
         blockedBecauseRunning = false,
-        autoRefreshPausedByCarrierLimit = false
+        autoRefreshPausedByCarrierLimit = false,
+        autoRefreshPausedByNativeFailure = false
     )
 }
 
@@ -204,7 +211,8 @@ internal fun reduceLiveMenuFailure(
         isCarrierRetryLimit = false,
         isSafaricomServiceError = false,
         previousMenuRetained = retained,
-        blockedBecauseRunning = false
+        blockedBecauseRunning = false,
+        autoRefreshPausedByNativeFailure = error.contains("USSD_RETURN_FAILURE", ignoreCase = true)
     )
 }
 
@@ -228,13 +236,19 @@ internal fun reduceLiveMenuBlocked(
     )
 }
 
+internal fun shouldBlockLiveMenuForNativeSession(
+    forceManual: Boolean,
+    requestUnresolved: Boolean,
+    sessionMayBePending: Boolean
+): Boolean = requestUnresolved || (!forceManual && sessionMayBePending)
+
 internal fun shouldAutoRefreshLiveMenu(
     state: SignatureLiveMenuState,
     nowMs: Long,
     intervalMs: Long = LIVE_MENU_AUTO_REFRESH_INTERVAL_MS
 ): Boolean {
     if (state.loading) return false
-    if (state.autoRefreshPausedByCarrierLimit) return false
+    if (state.autoRefreshPausedByCarrierLimit || state.autoRefreshPausedByNativeFailure) return false
     if (state.lastAttemptAt <= 0L) return true
     return (nowMs - state.lastAttemptAt) >= intervalMs
 }
@@ -244,7 +258,7 @@ internal fun secondsUntilNextAutoRefresh(
     nowMs: Long,
     intervalMs: Long = LIVE_MENU_AUTO_REFRESH_INTERVAL_MS
 ): Int {
-    if (state.autoRefreshPausedByCarrierLimit) return 0
+    if (state.autoRefreshPausedByCarrierLimit || state.autoRefreshPausedByNativeFailure) return 0
     if (state.lastAttemptAt <= 0L) return (intervalMs / 1_000L).toInt()
     val remainingMs = (intervalMs - (nowMs - state.lastAttemptAt)).coerceAtLeast(0L)
     return (remainingMs / 1_000L + if (remainingMs % 1_000L == 0L) 0L else 1L).toInt()
@@ -412,9 +426,14 @@ internal object SignatureLiveMenuCoordinator {
                 return false
             }
 
-            if (SilentUssdOptimized.isNativeRequestUnresolved() ||
-                SilentUssdOptimized.nativeSessionMayBePending()) {
-                val blockedMessage = if (SilentUssdOptimized.nativeSessionMayBePending()) {
+            val nativeRequestUnresolved = SilentUssdOptimized.isNativeRequestUnresolved()
+            val nativeSessionMayBePending = SilentUssdOptimized.nativeSessionMayBePending()
+            if (shouldBlockLiveMenuForNativeSession(
+                    forceManual = forceManual,
+                    requestUnresolved = nativeRequestUnresolved,
+                    sessionMayBePending = nativeSessionMayBePending
+                )) {
+                val blockedMessage = if (nativeSessionMayBePending && !nativeRequestUnresolved) {
                     "Native USSD session may still be pending on Android — restart the phone or toggle airplane mode before refreshing."
                 } else {
                     "Native USSD session unresolved — Android still owns the previous request. Wait for it to complete or restart the phone before refreshing."
@@ -437,13 +456,13 @@ internal object SignatureLiveMenuCoordinator {
                 )
                 UssdPerformanceDiagnostics.recordSilentPendingMmiHypothesis(
                     inferred = true,
-                    detail = "Live Menu blocked: nativeRequestUnresolved=${SilentUssdOptimized.isNativeRequestUnresolved()} nativeSessionMayBePending=${SilentUssdOptimized.nativeSessionMayBePending()}"
+                    detail = "Live Menu blocked: nativeRequestUnresolved=$nativeRequestUnresolved nativeSessionMayBePending=$nativeSessionMayBePending forceManual=$forceManual"
                 )
                 return false
             }
 
             if (preview.isNullOrBlank()) {
-                val reason = "No offer with a saved PN verification code is available. Select an eligible offer in Offers to inspect its live menu."
+                val reason = "The Live Menu verification template is invalid or missing its phone-number placeholder. Restore the default Safaricom template or correct the saved template; no offer selection is required to view Live Menu."
                 val failedState = reduceLiveMenuFailure(
                     previous = current.copy(
                         simDescription = simDescription,
