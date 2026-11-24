@@ -28,6 +28,24 @@ class SignatureLiveMenuCoordinatorTest {
         )
     }
 
+    @Test fun nativeGenericFailurePausesAutomaticRefreshButAllowsExplicitSilentRefresh() {
+        assertTrue(shouldBlockLiveMenuForNativeSession(
+            forceManual = false,
+            requestUnresolved = false,
+            sessionMayBePending = true
+        ))
+        assertFalse(shouldBlockLiveMenuForNativeSession(
+            forceManual = true,
+            requestUnresolved = false,
+            sessionMayBePending = true
+        ))
+        assertTrue(shouldBlockLiveMenuForNativeSession(
+            forceManual = true,
+            requestUnresolved = true,
+            sessionMayBePending = true
+        ))
+    }
+
     @Test fun validMenuSuccessStoresMenuAndClearsStaleAndErrorState() {
         val state = sampleValidState()
         assertFalse(state.loading)
