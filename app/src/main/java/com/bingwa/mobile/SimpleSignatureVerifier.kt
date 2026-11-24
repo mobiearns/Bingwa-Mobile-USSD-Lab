@@ -101,8 +101,8 @@ internal object SimpleSignatureVerifier {
             .toList()
         if (lineOptions.size > 1) return lineOptions
 
-        val markers = Regex("""(?<![\\d.])([1-7])\\s*[.)]\\s+""")
-            .findAll(response.replace('\\r', ' '))
+        val markers = Regex("""(?<![\d.])([1-7])\s*[.)]\s+""")
+            .findAll(response.replace('\r', ' '))
             .toList()
         if (markers.size < 2) return lineOptions
 
@@ -110,8 +110,8 @@ internal object SimpleSignatureVerifier {
             val start = marker.range.last + 1
             val end = markers.getOrNull(index + 1)?.range?.first ?: response.length
             val label = response.substring(start, end)
-                .replace('\\n', ' ')
-                .replace(Regex("""\\s+"""), " ")
+                .replace('\n', ' ')
+                .replace(Regex("""\s+"""), " ")
                 .trim()
                 .trimEnd(';', '|')
             val number = marker.groupValues[1].toIntOrNull() ?: return@mapIndexedNotNull null
