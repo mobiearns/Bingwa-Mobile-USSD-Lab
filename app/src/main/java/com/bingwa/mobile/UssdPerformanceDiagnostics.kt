@@ -62,6 +62,16 @@ internal object UssdPerformanceDiagnostics {
         record("silent.lifecycle_start", detail = "requestId=$requestId processRequestNumber=$nativeRequestsStartedThisProcess")
     }
 
+    fun recordNativeRequestTimedOut(requestId: Long) {
+        val accepted = synchronized(nativeLifecycleLock) {
+            if (activeNativeLifecycleRequestId != requestId) false else {
+                lastNativeRequestOutcome = "APP_TIMEOUT_UNRESOLVED"
+                true
+            }
+        }
+        if (accepted) record("silent.lifecycle_timeout", detail = "requestId=$requestId outcome=APP_TIMEOUT_UNRESOLVED nativeRequestStillActive=true")
+    }
+
     fun recordNativeRequestFinished(requestId: Long, outcome: String, failureCode: Int? = null) {
         val accepted = synchronized(nativeLifecycleLock) {
             if (activeNativeLifecycleRequestId != requestId) false else {
@@ -87,6 +97,7 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Last app request outcome: $lastNativeRequestOutcome")
             appendLine("Last Android callback failure code: ${lastNativeRequestFailureCode ?: "none"}")
             appendLine("Native request currently active in Bingwa: ${activeNativeLifecycleRequestId != 0L}")
+            appendLine("Unresolved timeout policy: app timeout does not cancel Android USSD; single-flight lock remains held until a real Android callback")
             appendLine("System-wide pending MMI/USSD session: UNKNOWN — not exposed by the public Android Telephony API to this app")
             appendLine("FDN state: NOT COLLECTED — verify in SIM settings or authorized platform diagnostics")
             appendLine("Radio/RIL transmission evidence: NOT AVAILABLE through ordinary app APIs; controlled ADB radio log capture is required")
@@ -243,7 +254,12 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Carrier telephony USSD policy: $lastSilentCarrierConfig")
             appendLine("Android SDK: $lastSilentAndroidSdk")
             appendLine("Duration: $elapsedMs ms")
-            appendLine("Callback outcome: ${if (requestStarted) "CALLBACK FAILURE" else "REQUEST COULD NOT START"}")
+            val isAppTimeout = error.contains("response wait timed out", ignoreCase = true)
+            appendLine("Callback outcome: ${when {
+                !requestStarted -> "REQUEST COULD NOT START"
+                isAppTimeout -> "APP TIMEOUT · NATIVE REQUEST STILL UNRESOLVED"
+                else -> "ANDROID CALLBACK FAILURE"
+            }}")
             appendLine("Raw response text received: No — Android failure callback provides no carrier response text")
             appendLine("Parsed menu options count: 0")
             appendLine("Carrier retry-limit response: No")

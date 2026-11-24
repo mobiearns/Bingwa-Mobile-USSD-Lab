@@ -6,6 +6,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.telephony.PhoneStateListener
+import android.telephony.ServiceState
 import android.telephony.TelephonyManager
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,6 +36,9 @@ object SilentUssdOptimized {
     private val isProcessing = AtomicBoolean(false)
     private val requestCounter = AtomicLong(0L)
     @Volatile private var activeRequestId: Long = 0L
+    @Volatile private var timeoutNotifiedRequestId: Long = 0L
+    @Volatile private var observedTelephonyManager: TelephonyManager? = null
+    @Volatile private var radioStateListener: PhoneStateListener? = null
 
     fun execute(
         context: Context,
@@ -89,6 +94,7 @@ object SilentUssdOptimized {
             successCb = onSuccess
             failureCb = onFailure
             activeRequestId = requestId
+            timeoutNotifiedRequestId = 0L
             armTimeout(requestId)
             armWatchdog(requestId)
         }
@@ -104,6 +110,12 @@ object SilentUssdOptimized {
             "charsAfterHash=0 containsOnlyDialString=true subscriptionIdAvailable=${selectedSubscriptionId != null}"
         UssdPerformanceDiagnostics.record("silent.request_profile", detail = requestProfile)
         UssdPerformanceDiagnostics.recordSilentRequestProfile(requestProfile)
+        val integrityEvidence = "inputUnchanged=${code == ussdCode} startsWithStar=${code.startsWith('*')} " +
+            "endsWithHash=${code.endsWith('#')} hashCount=${code.count { it == '#' }} " +
+            "finalCharacterCodePoint=${code.lastOrNull()?.code ?: -1} length=${code.length} " +
+            "asciiOnly=${code.all { it.code in 0x21..0x7E }} exactCanonicalString=true"
+        UssdPerformanceDiagnostics.record("silent.command_integrity", detail = integrityEvidence)
+        startRadioObservation(telephonyManager, requestId)
         val launchResult = tryPublicApi(
             telephonyManager,
             code,
@@ -135,6 +147,7 @@ object SilentUssdOptimized {
                 cancelTimeout()
                 successCb = null
                 failureCb = null
+                stopRadioObservation()
                 activeRequestId = 0L
                 isProcessing.set(false)
             }
@@ -179,7 +192,8 @@ object SilentUssdOptimized {
                         selectedSubscriptionId == callbackSubscriptionId
                     } else null
                     val evidence = "success requestEchoMatches=$requestEchoMatches callbackChars=${request.length} " +
-                        "callbackSeparators=${request.count { it == '*' }} subscriptionBindingMatches=${bindingMatches ?: "not_available"}"
+                        "callbackSeparators=${request.count { it == '*' }} callbackEndsWithHash=${request.endsWith('#')} " +
+                        "callbackHashCount=${request.count { it == '#' }} subscriptionBindingMatches=${bindingMatches ?: "not_available"}"
                     UssdPerformanceDiagnostics.record("silent.callback_context", detail = evidence)
                     UssdPerformanceDiagnostics.recordSilentApiEvidence("Callback context: $evidence")
                     UssdPerformanceDiagnostics.recordSilentFirstResponse(
@@ -219,6 +233,7 @@ object SilentUssdOptimized {
                     }
                     val evidence = "failure category=$category code=$failureCode requestEchoMatches=$requestEchoMatches " +
                         "callbackChars=${request.length} callbackSeparators=${request.count { it == '*' }} " +
+                        "callbackEndsWithHash=${request.endsWith('#')} callbackHashCount=${request.count { it == '#' }} " +
                         "subscriptionBindingMatches=${bindingMatches ?: "not_available"}"
                     UssdPerformanceDiagnostics.record("silent.callback_context", detail = evidence)
                     UssdPerformanceDiagnostics.recordSilentApiEvidence("Callback context: $evidence")
@@ -245,6 +260,57 @@ object SilentUssdOptimized {
             Log.w(TAG, "sendUssdRequest failed to start: ${e.javaClass.simpleName}: ${e.message}")
             "Unable to start TelephonyManager.sendUssdRequest(): ${e.message ?: e.javaClass.simpleName}"
         }
+    }
+
+    /**
+     * Observe public telephony state changes while a native USSD request is unresolved.
+     * These events can reveal service/technology transitions, but cannot prove that
+     * the modem transmitted a USSD PDU or expose private RIL error causes.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startRadioObservation(tm: TelephonyManager, requestId: Long) {
+        stopRadioObservation()
+        val listener = object : PhoneStateListener() {
+            override fun onServiceStateChanged(serviceState: ServiceState) {
+                UssdPerformanceDiagnostics.record(
+                    "silent.radio_service_state",
+                    detail = "requestId=$requestId state=${serviceState.state} roaming=${serviceState.roaming} voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
+                )
+            }
+            override fun onDataConnectionStateChanged(state: Int, networkType: Int) {
+                UssdPerformanceDiagnostics.record(
+                    "silent.radio_data_state",
+                    detail = "requestId=$requestId dataState=$state dataNetworkType=$networkType voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
+                )
+            }
+            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                UssdPerformanceDiagnostics.record("silent.radio_call_state", detail = "requestId=$requestId callState=$state")
+            }
+        }
+        try {
+            tm.listen(
+                listener,
+                PhoneStateListener.LISTEN_SERVICE_STATE or
+                    PhoneStateListener.LISTEN_DATA_CONNECTION_STATE or
+                    PhoneStateListener.LISTEN_CALL_STATE
+            )
+            observedTelephonyManager = tm
+            radioStateListener = listener
+            UssdPerformanceDiagnostics.record("silent.radio_observer", detail = "requestId=$requestId registered=true events=service,data,call")
+        } catch (security: SecurityException) {
+            UssdPerformanceDiagnostics.record("silent.radio_observer", detail = "requestId=$requestId registered=false reason=READ_PHONE_STATE_or_vendor_restriction")
+        } catch (error: Exception) {
+            UssdPerformanceDiagnostics.record("silent.radio_observer", detail = "requestId=$requestId registered=false reason=${error.javaClass.simpleName}")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopRadioObservation() {
+        val listener = radioStateListener
+        val tm = observedTelephonyManager
+        radioStateListener = null
+        observedTelephonyManager = null
+        if (listener != null && tm != null) runCatching { tm.listen(listener, PhoneStateListener.LISTEN_NONE) }
     }
 
     /**
@@ -340,6 +406,7 @@ object SilentUssdOptimized {
             }
             cancelTimeout()
             cancelWatchdog()
+            stopRadioObservation()
             val c = successCb
             successCb = null
             failureCb = null
@@ -367,6 +434,7 @@ object SilentUssdOptimized {
             }
             cancelTimeout()
             cancelWatchdog()
+            stopRadioObservation()
             val c = failureCb
             successCb = null
             failureCb = null
@@ -384,8 +452,8 @@ object SilentUssdOptimized {
     private fun armTimeout(requestId: Long) {
         cancelTimeout()
         val timeout = Runnable {
-            Log.w(TAG, "Silent USSD request #$requestId timed out after ${TIMEOUT_MS}ms")
-            deliverFailure(requestId, "Timeout waiting for USSD response on a weak or delayed network")
+            Log.w(TAG, "Silent USSD request #$requestId timed out after ${TIMEOUT_MS}ms; native session remains unresolved")
+            notifyTimeoutWithoutReleasingNativeRequest(requestId)
         }
         timeoutRunnable = timeout
         handler.postDelayed(timeout, TIMEOUT_MS)
@@ -395,12 +463,38 @@ object SilentUssdOptimized {
         cancelWatchdog()
         val watchdog = Runnable {
             if (isProcessing.get() && activeRequestId == requestId) {
-                Log.w(TAG, "Watchdog resetting stuck USSD lock for requestId=$requestId")
-                deliverFailure(requestId, "Watchdog reset: USSD request timed out")
+                Log.w(TAG, "USSD request #$requestId is still unresolved; retaining single-flight lock")
+                UssdPerformanceDiagnostics.record("silent.watchdog_unresolved", detail = "requestId=$requestId nativeRequestStillActive=true lockRetained=true automaticRetryBlocked=true")
             }
         }
         watchdogRunnable = watchdog
         handler.postDelayed(watchdog, TIMEOUT_MS + 5_000L)
+    }
+
+    /**
+     * An app-side timeout is not an Android cancellation signal. Notify the caller,
+     * but retain the native request identity and single-flight lock until Android
+     * eventually delivers its real success/failure callback or the process exits.
+     */
+    private fun notifyTimeoutWithoutReleasingNativeRequest(requestId: Long) {
+        val callback = synchronized(this) {
+            if (activeRequestId != requestId || timeoutNotifiedRequestId == requestId) return
+            timeoutNotifiedRequestId = requestId
+            val current = failureCb
+            failureCb = null
+            current
+        }
+        UssdPerformanceDiagnostics.recordNativeRequestTimedOut(requestId)
+        UssdPerformanceDiagnostics.record(
+            "silent.timeout_unresolved",
+            detail = "requestId=$requestId appTimeoutMs=$TIMEOUT_MS nativeCancellationAvailable=false lockRetained=true"
+        )
+        runCatching {
+            callback?.invoke(
+                "Bingwa's response wait timed out after ${TIMEOUT_MS}ms, but Android has not confirmed that the native USSD session ended. " +
+                    "Automatic retries are blocked until Android returns a callback; restart the phone if it remains unresolved."
+            )
+        }
     }
 
     private fun cancelWatchdog() {
