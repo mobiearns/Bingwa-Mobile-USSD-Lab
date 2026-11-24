@@ -54,7 +54,7 @@ class BalanceChecker : Service() {
             }
             return ROTATING_CHECK_INTERVALS_MS[idx]
         }
-        private const val BALANCE_TIMEOUT_MS = 5_000L
+        private const val BALANCE_TIMEOUT_MS = 25_000L
         private const val EVENT_REFRESH_DELAY_MS = 2_000L
         private const val FOREGROUND_REFRESH_COOLDOWN_MS = 3_000L
         private const val SUCCESS_COOLDOWN_MS = 30_000L   // don't check again within 30s if success
@@ -263,27 +263,52 @@ class BalanceChecker : Service() {
             armTimeout()
 
             val balanceUssd = resolveBalanceUssdCode(context, selectionOverride)
-            Log.d(TAG, "Starting balance check via $balanceUssd (slot=${selectionOverride ?: "default"})")
+            Log.d(TAG, "Starting balance check (slot=${selectionOverride ?: "default"}, codeChars=${balanceUssd.length})")
 
             // Try UssdHelper (silent) first
+            val completionHandled = java.util.concurrent.atomic.AtomicBoolean(false)
             val helperSuccess = UssdHelper.dialUssd(
                 context,
                 balanceUssd,
                 silentOnly = true,
                 subIdOverride = selectionOverride,
                 onSuccess = { response ->
-                    Log.d(TAG, "UssdHelper success: '$response'")
+                    if (!completionHandled.compareAndSet(false, true)) return@dialUssd
+                    cancelTimeout()
+                    Log.d(TAG, "UssdHelper returned a balance response (chars=${response.length})")
                     handleBalanceResponse(context, response, activeRequestContext)
                 },
                 onFailure = { error ->
+                    if (!completionHandled.compareAndSet(false, true)) return@dialUssd
+                    cancelTimeout()
+                    val requestContext = activeRequestContext ?: BalanceRequestContext(selectionOverride, persistResult)
+                    if (SilentUssdOptimized.isNativeRequestUnresolved()) {
+                        Log.w(TAG, "Native USSD remains unresolved; suppressing visible fallback and automatic retry")
+                        checking = false
+                        activeRequestContext = null
+                        retryRunnable?.let { timeoutHandler.removeCallbacks(it) }
+                        retryRunnable = null
+                        notifyFailure(
+                            context,
+                            requestContext.selectionOverride,
+                            requestContext.persistResult,
+                            error
+                        )
+                        return@dialUssd
+                    }
                     Log.e(TAG, "UssdHelper failed: $error, trying fallback")
+                    checking = false
+                    activeRequestContext = null
                     if (!startBalanceFallback(context, balanceUssd, selectionOverride, persistResult)) {
                         Log.w(TAG, "Fallback unavailable, checking retry")
                         scheduleRetry(context, selectionOverride, persistResult)
                     }
                 }
             )
-            if (!helperSuccess) {
+            if (!helperSuccess && completionHandled.compareAndSet(false, true)) {
+                cancelTimeout()
+                checking = false
+                activeRequestContext = null
                 if (!startBalanceFallback(context, balanceUssd, selectionOverride, persistResult)) {
                     scheduleRetry(context, selectionOverride, persistResult)
                 }
@@ -365,7 +390,12 @@ class BalanceChecker : Service() {
             timeoutHandler.postDelayed(runnable, delay)
         }
 
-        private fun notifyFailure(context: Context, selectionOverride: Int?, persistResult: Boolean) {
+        private fun notifyFailure(
+            context: Context,
+            selectionOverride: Int?,
+            persistResult: Boolean,
+            errorMessage: String = "Balance check failed after $MAX_RETRY_ATTEMPTS attempts"
+        ) {
             checking = false
             activeRequestContext = null
             val result = BalanceResult(
@@ -376,7 +406,7 @@ class BalanceChecker : Service() {
                 timestamp = System.currentTimeMillis(),
                 sourceSimSlot = selectionOverride?.let { slotFromOverride(it) },
                 success = false,
-                errorMessage = "Balance check failed after $MAX_RETRY_ATTEMPTS attempts",
+                errorMessage = errorMessage,
                 selectionOverride = selectionOverride,
                 persistResult = persistResult
             )
@@ -581,6 +611,15 @@ class BalanceChecker : Service() {
             val ctx = activeRequestContext ?: BalanceRequestContext()
             activeRequestContext = null
             val appContext = appContextRef ?: return
+            if (SilentUssdOptimized.isExecutionInProgress()) {
+                notifyFailure(
+                    appContext,
+                    ctx.selectionOverride,
+                    ctx.persistResult,
+                    "Native USSD session is still unresolved; no fallback or retry was started."
+                )
+                return
+            }
             // If we have retries left, schedule one
             if (retryCount < MAX_RETRY_ATTEMPTS) {
                 scheduleRetry(appContext, ctx.selectionOverride, ctx.persistResult)

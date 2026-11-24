@@ -58,12 +58,10 @@ object SimSlotEnforcer {
             USSD_SIM_SELECTION_SLOT_1 -> {
                 // Strictly slot 1
                 sims.firstOrNull { it.simSlotIndex == 0 }?.subscriptionId
-                    ?: sims.getOrNull(0)?.subscriptionId
             }
             USSD_SIM_SELECTION_SLOT_2 -> {
                 // Strictly slot 2
                 sims.firstOrNull { it.simSlotIndex == 1 }?.subscriptionId
-                    ?: sims.getOrNull(1)?.subscriptionId
             }
             else -> {
                 // Explicit subscription ID

@@ -164,6 +164,10 @@ object SilentUssdOptimized {
 
     fun isExecutionInProgress(): Boolean = isProcessing.get()
 
+    /** True after the app wait expired while Android still owns the native request. */
+    fun isNativeRequestUnresolved(): Boolean =
+        isProcessing.get() && activeRequestId != 0L && timeoutNotifiedRequestId == activeRequestId
+
     @SuppressLint("MissingPermission")
     private fun tryPublicApi(
         tm: TelephonyManager,

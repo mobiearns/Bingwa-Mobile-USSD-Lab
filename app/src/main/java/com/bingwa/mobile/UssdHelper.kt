@@ -123,8 +123,10 @@ object UssdHelper {
                 deliverOnceFailure("CALL_PHONE permission is required for silent USSD requests.")
                 return false
             }
-            if (SilentUssdOptimized.isExecutionInProgress()) {
-                deliverOnceFailure("USSD execution already in progress")
+            if (UssdNavigationService.isBusyForBalanceCheck() ||
+                SilentUssdOptimized.isExecutionInProgress()
+            ) {
+                deliverOnceFailure("Another USSD execution path is already in progress. Wait for it to finish before starting silent USSD.")
                 return false
             }
         }
