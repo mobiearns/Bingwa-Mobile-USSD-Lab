@@ -282,8 +282,10 @@ class BalanceChecker : Service() {
                     if (!completionHandled.compareAndSet(false, true)) return@dialUssd
                     cancelTimeout()
                     val requestContext = activeRequestContext ?: BalanceRequestContext(selectionOverride, persistResult)
-                    if (SilentUssdOptimized.isNativeRequestUnresolved()) {
-                        Log.w(TAG, "Native USSD remains unresolved; suppressing visible fallback and automatic retry")
+                    if (SilentUssdOptimized.isNativeRequestUnresolved() ||
+                        SilentUssdOptimized.nativeSessionMayBePending()
+                    ) {
+                        Log.w(TAG, "Native USSD remains unresolved or may have pending MMI (-1); suppressing fallback and automatic retry")
                         checking = false
                         activeRequestContext = null
                         retryRunnable?.let { timeoutHandler.removeCallbacks(it) }

@@ -8,8 +8,11 @@ import android.os.Looper
 import android.os.SystemClock
 import android.telephony.PhoneStateListener
 import android.telephony.ServiceState
+import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.util.Log
+import androidx.annotation.RequiresApi
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -39,7 +42,10 @@ object SilentUssdOptimized {
     @Volatile private var timeoutNotifiedRequestId: Long = 0L
     @Volatile private var observedTelephonyManager: TelephonyManager? = null
     @Volatile private var radioStateListener: PhoneStateListener? = null
+    @Volatile private var radioTelephonyCallback: Any? = null
     @Volatile private var lastFailureCategory: String? = null
+    @Volatile private var lastFailureCode: Int? = null
+    private val mainThreadExecutor = Executor { runnable -> handler.post(runnable) }
     /**
      * True when the last native USSD failure was USSD_RETURN_FAILURE (-1) and the
      * Android-side MMI/USSD session may still be pending on the telephony service.
@@ -116,6 +122,7 @@ object SilentUssdOptimized {
             failureCb = onFailure
             activeRequestId = requestId
             timeoutNotifiedRequestId = 0L
+            lastFailureCode = null
             armTimeout(requestId)
             armWatchdog(requestId)
         }
@@ -198,6 +205,8 @@ object SilentUssdOptimized {
      * guidance for -1 instead of a generic carrier error.
      */
     fun lastFailureCategory(): String? = lastFailureCategory
+
+    fun lastFailureCode(): Int? = lastFailureCode
 
     /**
      * True when the last native USSD failure was USSD_RETURN_FAILURE (-1) and the
@@ -328,15 +337,18 @@ object SilentUssdOptimized {
      */
     @SuppressLint("MissingPermission")
     private fun startRadioObservation(tm: TelephonyManager, requestId: Long) {
-        // PhoneStateListener binds its callback Handler to the Looper of the
-        // thread on which it is constructed. Always construct/register it on
-        // the main Looper so worker-thread callers cannot create a listener
-        // without a Looper.
         handler.post {
             if (activeRequestId != requestId || !isProcessing.get()) return@post
 
             stopRadioObservation()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                registerAndroid12RadioCallback(tm, requestId)
+                return@post
+            }
+
+            @Suppress("DEPRECATION")
             val listener = object : PhoneStateListener() {
+                @Deprecated("Deprecated in Java")
                 override fun onServiceStateChanged(serviceState: ServiceState) {
                     UssdPerformanceDiagnostics.record(
                         "silent.radio_service_state",
@@ -344,6 +356,7 @@ object SilentUssdOptimized {
                     )
                 }
 
+                @Deprecated("Deprecated in Java")
                 override fun onDataConnectionStateChanged(state: Int, networkType: Int) {
                     UssdPerformanceDiagnostics.record(
                         "silent.radio_data_state",
@@ -351,6 +364,7 @@ object SilentUssdOptimized {
                     )
                 }
 
+                @Deprecated("Deprecated in Java")
                 override fun onCallStateChanged(state: Int, phoneNumber: String?) {
                     UssdPerformanceDiagnostics.record(
                         "silent.radio_call_state",
@@ -360,6 +374,7 @@ object SilentUssdOptimized {
             }
 
             try {
+                @Suppress("DEPRECATION")
                 tm.listen(
                     listener,
                     PhoneStateListener.LISTEN_SERVICE_STATE or
@@ -371,9 +386,10 @@ object SilentUssdOptimized {
                     radioStateListener = listener
                     UssdPerformanceDiagnostics.record(
                         "silent.radio_observer",
-                        detail = "requestId=$requestId registered=true events=service,data,call looper=main"
+                        detail = "requestId=$requestId registered=true events=service,data,call api=PhoneStateListener"
                     )
                 } else {
+                    @Suppress("DEPRECATION")
                     tm.listen(listener, PhoneStateListener.LISTEN_NONE)
                 }
             } catch (security: SecurityException) {
@@ -390,13 +406,76 @@ object SilentUssdOptimized {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.S)
+    @SuppressLint("MissingPermission")
+    private fun registerAndroid12RadioCallback(tm: TelephonyManager, requestId: Long) {
+        val callback = object : TelephonyCallback(),
+            TelephonyCallback.ServiceStateListener,
+            TelephonyCallback.DataConnectionStateListener,
+            TelephonyCallback.CallStateListener {
+            override fun onServiceStateChanged(serviceState: ServiceState) {
+                UssdPerformanceDiagnostics.record(
+                    "silent.radio_service_state",
+                    detail = "requestId=$requestId state=${serviceState.state} roaming=${serviceState.roaming} voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
+                )
+            }
+
+            override fun onDataConnectionStateChanged(state: Int, networkType: Int) {
+                UssdPerformanceDiagnostics.record(
+                    "silent.radio_data_state",
+                    detail = "requestId=$requestId dataState=$state dataNetworkType=$networkType voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
+                )
+            }
+
+            override fun onCallStateChanged(state: Int) {
+                UssdPerformanceDiagnostics.record(
+                    "silent.radio_call_state",
+                    detail = "requestId=$requestId callState=$state"
+                )
+            }
+        }
+        try {
+            tm.registerTelephonyCallback(mainThreadExecutor, callback)
+            if (activeRequestId == requestId && isProcessing.get()) {
+                observedTelephonyManager = tm
+                radioTelephonyCallback = callback
+                UssdPerformanceDiagnostics.record(
+                    "silent.radio_observer",
+                    detail = "requestId=$requestId registered=true events=service,data,call api=TelephonyCallback"
+                )
+            } else {
+                tm.unregisterTelephonyCallback(callback)
+            }
+        } catch (security: SecurityException) {
+            UssdPerformanceDiagnostics.record(
+                "silent.radio_observer",
+                detail = "requestId=$requestId registered=false reason=READ_PHONE_STATE_or_vendor_restriction"
+            )
+        } catch (error: Exception) {
+            UssdPerformanceDiagnostics.record(
+                "silent.radio_observer",
+                detail = "requestId=$requestId registered=false reason=${error.javaClass.simpleName}"
+            )
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun stopRadioObservation() {
         val listener = radioStateListener
+        val callback = radioTelephonyCallback
         val tm = observedTelephonyManager
         radioStateListener = null
+        radioTelephonyCallback = null
         observedTelephonyManager = null
-        if (listener != null && tm != null) runCatching { tm.listen(listener, PhoneStateListener.LISTEN_NONE) }
+        if (tm != null) {
+            if (listener != null) {
+                @Suppress("DEPRECATION")
+                runCatching { tm.listen(listener, PhoneStateListener.LISTEN_NONE) }
+            }
+            if (callback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                runCatching { tm.unregisterTelephonyCallback(callback as TelephonyCallback) }
+            }
+        }
     }
 
     /**
@@ -499,6 +578,7 @@ object SilentUssdOptimized {
             activeRequestId = 0L
             isProcessing.set(false)
             nativeSessionMayBePending = false
+            lastFailureCode = null
             c
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -513,6 +593,7 @@ object SilentUssdOptimized {
             reason.contains("timeout", ignoreCase = true) -> "APP_TIMEOUT_NO_CALLBACK"
             else -> "APP_FAILURE"
         }
+        lastFailureCode = failureCode
         lastFailureCategory = when (failureCode) {
             TelephonyManager.USSD_RETURN_FAILURE -> "ANDROID_GENERIC_FAILURE_CALLBACK"
             TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "ANDROID_TELEPHONY_SERVICE_UNAVAILABLE"

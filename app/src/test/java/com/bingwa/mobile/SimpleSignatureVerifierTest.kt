@@ -2,6 +2,7 @@ package com.bingwa.mobile
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SimpleSignatureVerifierTest {
@@ -22,39 +23,41 @@ class SimpleSignatureVerifierTest {
     )
 
     @Test fun previewUsesConfiguredPhoneNumberForPnVerification() {
-        assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*pn*1#"))
-        assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*[pn]*1#"))
-        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*pn*5*1#"))
-        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678#"))
-        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678*5*1#"))
+        assertEquals("*544*0790993046#", SimpleSignatureVerifier.previewCode("*544*pn*1#"))
+        assertEquals("*544*0790993046#", SimpleSignatureVerifier.previewCode("*544*[pn]*1#"))
+        assertEquals("*180*5*2*0790993046#", SimpleSignatureVerifier.previewCode("*180*5*2*pn*5*1#"))
+        assertEquals("*180*5*2*0790993046#", SimpleSignatureVerifier.previewCode("*180*5*2*0790993046#"))
+        assertEquals("*180*5*2*0790993046#", SimpleSignatureVerifier.previewCode("*180*5*2*0712345678#"))
+        assertEquals("*180*5*2*0790993046#", SimpleSignatureVerifier.previewCode("*180*5*2*0790993046*5*1#"))
     }
 
 
     @Test fun safaricomLiveMenuUsesCorrectChainedOrderAndStopsAtPhonePrompt() {
         assertEquals(
-            "*180*5*2*0712345678#",
+            "*180*5*2*0790993046#",
             SimpleSignatureVerifier.previewCode("*180*2*5*pn*1*2#")
         )
         assertEquals(
-            "*180*5*2*0712345678#",
+            "*180*5*2*0790993046#",
             SimpleSignatureVerifier.previewCode("*180*5*2*pn*1*2#")
         )
     }
 
     @Test fun previewStripsFormattingAndRejectsDecoratedDialStrings() {
-        assertEquals("*180*5*2*0712345678#", SimpleSignatureVerifier.previewCode("  *180 * 5 * 2 * pn #  "))
-        assertEquals("*544*0712345678#", SimpleSignatureVerifier.previewCode("*544*pn%23"))
+        assertEquals("*180*5*2*0790993046#", SimpleSignatureVerifier.previewCode("  *180 * 5 * 2 * pn #  "))
+        assertEquals("*544*0790993046#", SimpleSignatureVerifier.previewCode("*544*pn%23"))
         assertNull(SimpleSignatureVerifier.previewCode("Dial *180*2*5*pn# now"))
         assertNull(SimpleSignatureVerifier.previewCode("*180*2*5*pn# extra"))
+        assertNull(SimpleSignatureVerifier.previewCode("*180#"))
     }
 
     @Test fun nativeBoundaryAcceptsOnlyAlreadyCanonicalDialStrings() {
-        assertEquals("*180*5*2*0712345678#", canonicalSilentUssdDialString("*180*5*2*0712345678#"))
-        assertNull(canonicalSilentUssdDialString(" *180*5*2*0712345678#"))
-        assertNull(canonicalSilentUssdDialString("*180 *5*2*0712345678#"))
-        assertNull(canonicalSilentUssdDialString("*180*5*2*0712345678"))
+        assertEquals("*180*5*2*0790993046#", canonicalSilentUssdDialString("*180*5*2*0790993046#"))
+        assertNull(canonicalSilentUssdDialString(" *180*5*2*0790993046#"))
+        assertNull(canonicalSilentUssdDialString("*180 *5*2*0790993046#"))
+        assertNull(canonicalSilentUssdDialString("*180*5*2*0790993046"))
         assertNull(canonicalSilentUssdDialString("*180*5*2*pn#"))
-        assertNull(canonicalSilentUssdDialString("tel:*180*5*2*0712345678#"))
+        assertNull(canonicalSilentUssdDialString("tel:*180*5*2*0790993046#"))
     }
     @Test fun identifiesSafaricomSubscriberRegistrationServiceResponse() {
         val response = "Dear Agent, the Subscriber Registration function has been deactivated. Kindly use the Jiandikishe App for Sim Activation"
@@ -190,5 +193,72 @@ class SimpleSignatureVerifierTest {
             "Welcome\n1. 1GB Daily bundle\n2. Weekly"
         )
         assertEquals(SimpleSignatureVerifier.Status.MISMATCH, result.status)
+    }
+
+    @Test fun extracts132CharPreviewSafelyAcrossLengthBoundariesWhileKeepingFullParsing() {
+        assertEquals("", extractSilentUssdPreview(null))
+        assertEquals("", extractSilentUssdPreview(""))
+        assertEquals("", extractSilentUssdPreview("   \n\r\n  "))
+        assertEquals(emptyList<Pair<Int, String>>(), SimpleSignatureVerifier.menuOptions(null))
+        assertEquals(emptyList<Pair<Int, String>>(), SimpleSignatureVerifier.firstScreenMenuOptions(null))
+        assertEquals(emptyList<Pair<Int, String>>(), SimpleSignatureVerifier.firstScreenMenuOptions(""))
+
+        val shortText = "1. 1GB Daily\n2. 250MB 24hrs"
+        assertEquals(shortText, extractSilentUssdPreview(shortText))
+
+        val exact132 = "1. 1GB Daily @20\n" + "A".repeat(132 - "1. 1GB Daily @20\n".length)
+        assertEquals(132, exact132.length)
+        assertEquals(exact132, extractSilentUssdPreview(exact132))
+
+        val longResponse = buildString {
+            appendLine("Select Bingwa offer:")
+            appendLine("1. 1GB Daily Valid 24hrs @ Ksh 20")
+            appendLine("2. 250MB Valid 24hrs @ Ksh 20")
+            appendLine("3. 1.25GB Valid Till Midnight @ Ksh 55")
+            appendLine("4. 2GB Weekly Data @ Ksh 100")
+            appendLine("5. 350MB Valid 7 Days @ Ksh 49")
+            appendLine("6. All In One Hourly Bundle @ Ksh 19")
+            appendLine("7. Unlimited Night Pass @ Ksh 50")
+            append("8. More")
+        }
+        val preview = extractSilentUssdPreview(longResponse)
+        assertEquals(132, preview.length)
+        assertTrue(preview.startsWith("Select Bingwa offer:\n1. 1GB Daily Valid 24hrs @ Ksh 20\n2. 250MB"))
+        // Underlying full response remains intact for menu parsing past character 132.
+        val parsed = SimpleSignatureVerifier.firstScreenMenuOptions(longResponse)
+        assertEquals(7, parsed.size)
+        assertEquals(7 to "Unlimited Night Pass @ Ksh 50", parsed.last())
+    }
+
+    @Test fun normalizesRealAndEscapedNewlinesWithoutIndexMismatchOnFlattenedResponses() {
+        val escapedCrlf = "Bingwa\\r\\n1. 1GB Daily\\r\\n2. 250MB 24hrs\\r\\n3. Weekly bundles"
+        val realCrlf = "Bingwa\r\n1. 1GB Daily\r\n2. 250MB 24hrs\r\n3. Weekly bundles"
+        val escapedLf = "Bingwa\\n1. 1GB Daily\\n2. 250MB 24hrs\\n3. Weekly bundles"
+
+        val expectedNormalized = "Bingwa\n1. 1GB Daily\n2. 250MB 24hrs\n3. Weekly bundles"
+        assertEquals(expectedNormalized, normalizeSilentUssdResponse(escapedCrlf))
+        assertEquals(expectedNormalized, normalizeSilentUssdResponse(realCrlf))
+        assertEquals(expectedNormalized, normalizeSilentUssdResponse(escapedLf))
+
+        val expectedOptions = listOf(1 to "1GB Daily", 2 to "250MB 24hrs", 3 to "Weekly bundles")
+        assertEquals(expectedOptions, SimpleSignatureVerifier.firstScreenMenuOptions(escapedCrlf))
+        assertEquals(expectedOptions, SimpleSignatureVerifier.firstScreenMenuOptions(realCrlf))
+        assertEquals(expectedOptions, SimpleSignatureVerifier.firstScreenMenuOptions(escapedLf))
+
+        // Regression: escaped sequences shortening the string must never cause index shift/out-of-bounds
+        // when the flattened regex branch matches on normalizedResponse.
+        val flattenedWithEscapes = "Welcome\\\\n\\r\\n\\r\\n1. 1GB Daily @20 2. 250MB 24hrs 3. 1 hour bundle"
+        assertEquals(
+            listOf(1 to "1GB Daily @20", 2 to "250MB 24hrs", 3 to "1 hour bundle"),
+            SimpleSignatureVerifier.firstScreenMenuOptions(flattenedWithEscapes)
+        )
+    }
+
+    @Test fun duplicateMenuPositionsKeepFirstOccurrenceDeterministically() {
+        val duplicateRaw = "1. 1GB Daily\n2. 250MB 24hrs\n1. Duplicate Should Not Overwrite"
+        assertEquals(
+            listOf(1 to "1GB Daily", 2 to "250MB 24hrs"),
+            SimpleSignatureVerifier.firstScreenMenuOptions(duplicateRaw)
+        )
     }
 }

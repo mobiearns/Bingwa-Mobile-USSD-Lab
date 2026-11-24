@@ -158,16 +158,29 @@ object UssdHelper {
         // Silent requests must only target the single resolved SIM subscription;
         // never automatically re-dial the same code onto another SIM slot.
         val effectiveTargets = if (silentOnly) listOf(targets.first()) else targets
-        return dialUssdAttempt(
+        if (silentOnly) {
+            UssdWakelock.acquire(context.applicationContext, 25_000L)
+        }
+        val started = dialUssdAttempt(
             context = context,
             code = code,
             silentOnly = silentOnly,
             targets = effectiveTargets,
             attemptIndex = 0,
-            onSuccess = ::deliverOnceSuccess,
-            onFailure = ::deliverOnceFailure,
+            onSuccess = { response ->
+                if (silentOnly) UssdWakelock.release()
+                deliverOnceSuccess(response)
+            },
+            onFailure = { reason ->
+                if (silentOnly) UssdWakelock.release()
+                deliverOnceFailure(reason)
+            },
             preserveRawResponse = preserveRawResponse
         )
+        if (silentOnly && !started) {
+            UssdWakelock.release()
+        }
+        return started
     }
 
     fun dialUssd(context: Context, ussdCode: String) {
@@ -296,11 +309,22 @@ object UssdHelper {
                 return "SIM slot ${target.slotIndex + 1} is permanently disabled."
             TelephonyManager.SIM_STATE_NOT_READY ->
                 return "SIM slot ${target.slotIndex + 1} is not ready yet."
+            TelephonyManager.SIM_STATE_CARD_IO_ERROR ->
+                return "SIM slot ${target.slotIndex + 1} reported a SIM card I/O error."
+            TelephonyManager.SIM_STATE_CARD_RESTRICTED ->
+                return "SIM slot ${target.slotIndex + 1} is restricted by carrier/device policy."
+            TelephonyManager.SIM_STATE_UNKNOWN ->
+                return "SIM slot ${target.slotIndex + 1} state is unknown or still initializing."
         }
 
         val serviceState = runCatching { boundTm.serviceState?.state }.getOrNull()
-        if (serviceState == ServiceState.STATE_POWER_OFF) {
-            return "SIM slot ${target.slotIndex + 1} radio is powered off (check airplane mode or SIM toggle)."
+        when (serviceState) {
+            ServiceState.STATE_POWER_OFF ->
+                return "SIM slot ${target.slotIndex + 1} radio is powered off (check airplane mode or SIM toggle)."
+            ServiceState.STATE_OUT_OF_SERVICE ->
+                return "SIM slot ${target.slotIndex + 1} has no cellular voice service (OUT_OF_SERVICE)."
+            ServiceState.STATE_EMERGENCY_ONLY ->
+                return "SIM slot ${target.slotIndex + 1} is limited to emergency calls only (EMERGENCY_ONLY)."
         }
 
         return null
@@ -618,6 +642,9 @@ object UssdHelper {
                 TelephonyManager.SIM_STATE_NETWORK_LOCKED -> "NETWORK_LOCKED"
                 TelephonyManager.SIM_STATE_NOT_READY -> "NOT_READY"
                 TelephonyManager.SIM_STATE_PERM_DISABLED -> "PERMANENTLY_DISABLED"
+                TelephonyManager.SIM_STATE_CARD_IO_ERROR -> "CARD_IO_ERROR"
+                TelephonyManager.SIM_STATE_CARD_RESTRICTED -> "CARD_RESTRICTED"
+                TelephonyManager.SIM_STATE_UNKNOWN -> "UNKNOWN"
                 else -> "UNKNOWN($it)"
             }
         } ?: "unavailable"
@@ -628,6 +655,14 @@ object UssdHelper {
                 ServiceState.STATE_EMERGENCY_ONLY -> "EMERGENCY_ONLY"
                 ServiceState.STATE_POWER_OFF -> "POWER_OFF"
                 else -> "UNKNOWN($it)"
+            }
+        } ?: "unavailable"
+        val callStateLabel = runCatching { bound.callState }.getOrNull()?.let {
+            when (it) {
+                TelephonyManager.CALL_STATE_IDLE -> "IDLE"
+                TelephonyManager.CALL_STATE_RINGING -> "RINGING"
+                TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
+                else -> "OTHER($it)"
             }
         } ?: "unavailable"
         val voiceType = runCatching { bound.voiceNetworkType }.getOrNull()?.toString() ?: "unavailable"
@@ -644,7 +679,7 @@ object UssdHelper {
             val networkOperatorNumeric = runCatching { bound.networkOperator }.getOrNull().orEmpty().ifBlank { "unavailable" }
             val simOperatorName = runCatching { bound.simOperatorName }.getOrNull().orEmpty().ifBlank { "unavailable" }
             val networkOperatorName = runCatching { bound.networkOperatorName }.getOrNull().orEmpty().ifBlank { "unavailable" }
-            "data service: $dataReg; data network type: $dataType; roaming: $roaming; phone type: $phoneType; SIM operator: $simOperatorName ($simOperatorNumeric); registered network operator: $networkOperatorName ($networkOperatorNumeric)"
+            "call state: $callStateLabel; data service: $dataReg; data network type: $dataType; roaming: $roaming; phone type: $phoneType; SIM operator: $simOperatorName ($simOperatorNumeric); registered network operator: $networkOperatorName ($networkOperatorNumeric)"
         }.getOrElse { "additional radio state unavailable (${it.javaClass.simpleName})" }
         val carrierName = runCatching {
             bound.simOperatorName?.trim().takeUnless { it.isNullOrBlank() }

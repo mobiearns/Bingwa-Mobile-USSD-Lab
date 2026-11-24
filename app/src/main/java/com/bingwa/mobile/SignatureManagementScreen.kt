@@ -256,13 +256,6 @@ fun SignatureManagementScreen(onBack: () -> Unit) {
                         selectedSim = liveMenuSim,
                         onSelectOffer = { newOfferId ->
                             selectedId = newOfferId
-                            SignatureLiveMenuCoordinator.refresh(
-                                context = context,
-                                offers = offers,
-                                selectedOfferId = newOfferId,
-                                forceManual = true
-                            )
-                            secondsToSync = SignatureLiveMenuCoordinator.secondsUntilNextAutoRefresh()
                         },
                         onSelectSim = { simSelection ->
                             liveMenuSim = simSelection
@@ -445,7 +438,7 @@ private fun SignatureTerminalHeader(
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(SignatureStudioColors.border))
         Text(
-            "▸ *180*5*2*0712345678# ▸ SILENT VERIFY ▸ MATCH name · aliases · data · duration · choice ▸ PRICE IGNORED ▸ EXECUTE ▸ ".repeat(3),
+            "▸ *180*5*2*0790993046# ▸ SILENT VERIFY ▸ MATCH name · aliases · data · duration · choice ▸ PRICE IGNORED ▸ EXECUTE ▸ ".repeat(3),
             Modifier.fillMaxWidth().background(SignatureStudioColors.ink).padding(vertical = 5.dp).basicMarquee(iterations = Int.MAX_VALUE, velocity = 40.dp),
             color = SignatureStudioColors.amber, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1, softWrap = false
         )
@@ -656,12 +649,6 @@ private fun SignatureLiveMenuPanel(
 ) {
     val context = LocalContext.current
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
-    var showCustomCodeDialog by remember { mutableStateOf(false) }
-    var customCodeDraft by remember {
-        mutableStateOf(
-            SignatureStudioStore.liveMenuCode(context).ifBlank { "*180*5*2*pn#" }
-        )
-    }
     val issueKey = if (state.hasDiagnosticIssue) {
         "${state.lastAttemptAt}|${state.lastAttemptOutcome}|${state.lastAttemptError}"
     } else null
@@ -670,60 +657,6 @@ private fun SignatureLiveMenuPanel(
         if (SignatureLiveMenuCoordinator.consumeAutoPresentIssueKey(state)) {
             showDiagnosticsDialog = true
         }
-    }
-
-    if (showCustomCodeDialog) {
-        AlertDialog(
-            onDismissRequest = { showCustomCodeDialog = false },
-            containerColor = SignatureStudioColors.card,
-            title = {
-                Text("Custom Live Menu code", color = SignatureStudioColors.t1, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Enter a verification template with pn (or 0712345678), e.g. *180*5*2*pn#. Live Menu dials it silently via TelephonyManager.sendUssdRequest().",
-                        color = SignatureStudioColors.t2,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp
-                    )
-                    OutlinedTextField(
-                        value = customCodeDraft,
-                        onValueChange = { customCodeDraft = it },
-                        singleLine = true,
-                        label = { Text("USSD template") },
-                        placeholder = { Text("*180*5*2*pn#") }
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val trimmed = customCodeDraft.trim()
-                        if (SimpleSignatureVerifier.previewCode(trimmed) == null) {
-                            Toast.makeText(
-                                context,
-                                "Use a *...# template containing pn or 0712345678.",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        } else {
-                            SignatureStudioStore.setLiveMenuCode(context, trimmed)
-                            showCustomCodeDialog = false
-                            onSelectOffer(LIVE_MENU_CUSTOM_SOURCE_ID)
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = SignatureStudioColors.cyan,
-                        contentColor = Color.Black
-                    )
-                ) { Text("Test silently", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCustomCodeDialog = false }) {
-                    Text("Cancel", color = SignatureStudioColors.t2)
-                }
-            }
-        )
     }
 
     if (showDiagnosticsDialog) {
@@ -824,6 +757,7 @@ private fun SignatureLiveMenuPanel(
                                 letterSpacing = .8.sp
                             )
                             DiagnosticRow("Method", state.lastAttemptMethod)
+                            DiagnosticRow("Lifecycle state", state.lastLifecycleState)
                             DiagnosticRow("Menu source", state.sourceSummary)
                             DiagnosticRow("Selected SIM", state.simDescription)
                             DiagnosticRow("Readiness", state.telephonyReadiness)
@@ -831,10 +765,12 @@ private fun SignatureLiveMenuPanel(
                                 DiagnosticRow("Dual-SIM check", state.simAdvice)
                             }
                             DiagnosticRow("Duration", "${state.lastAttemptDurationMs} ms")
+                            DiagnosticRow("Extraction time", "${state.lastExtractionDurationMs} ms")
                             DiagnosticRow("Callback outcome", state.lastAttemptOutcome)
+                            DiagnosticRow("Callback error code", state.lastCallbackErrorCode?.toString() ?: "none")
                             DiagnosticRow(
                                 "Raw response text",
-                                if (state.rawResponseReceived) "Yes (${state.lastAttemptRawResponse.length} chars)"
+                                if (state.rawResponseReceived) "Yes (${state.lastResponseCharCount} chars)"
                                 else "No — not supplied by Android"
                             )
                             DiagnosticRow("Parsed options", state.lastParsedOptionCount.toString())
@@ -849,7 +785,7 @@ private fun SignatureLiveMenuPanel(
 
                     Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            "RAW CARRIER RESPONSE (COMPLETE)",
+                            "EXTRACTED SILENT RESPONSE PREVIEW (UP TO $LIVE_MENU_PREVIEW_MAX_CHARS CHARS)",
                             color = SignatureStudioColors.amber,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,
@@ -864,7 +800,10 @@ private fun SignatureLiveMenuPanel(
                             SelectionContainer {
                                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)) {
                                     val finalText = when {
-                                        state.rawResponseReceived -> state.lastAttemptRawResponse
+                                        state.rawResponseReceived && state.lastAttemptPreviewText.isNotEmpty() ->
+                                            state.lastAttemptPreviewText
+                                        state.rawResponseReceived ->
+                                            "[Carrier returned an empty response with no displayable text]"
                                         state.blockedBecauseRunning ->
                                             "No request was sent because another silent USSD request was already running."
                                         else ->
@@ -1046,7 +985,6 @@ private fun SignatureLiveMenuPanel(
                 )
         }
         val activeSourceOffer = selectLiveMenuSourceOffer(offers, selectedOfferId)
-        val isCustomSelected = selectedOfferId == LIVE_MENU_CUSTOM_SOURCE_ID
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 val simOptions = buildList {
@@ -1076,7 +1014,7 @@ private fun SignatureLiveMenuPanel(
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 eligibleOffers.forEach { item ->
-                    val active = !isCustomSelected && item.id == activeSourceOffer?.id
+                    val active = item.id == activeSourceOffer?.id
                     val modeTag = if (normalizeOfferExecutionMode(item.executionMode, item.category) == OFFER_EXECUTION_MODE_SIMPLE) "Simple" else "Adv"
                     FilterChip(
                         selected = active,
@@ -1089,22 +1027,6 @@ private fun SignatureLiveMenuPanel(
                         )
                     )
                 }
-                FilterChip(
-                    selected = isCustomSelected,
-                    enabled = !state.loading,
-                    onClick = { showCustomCodeDialog = true },
-                    label = {
-                        Text(
-                            if (isCustomSelected) "Custom code ✎" else "Custom code",
-                            fontSize = 10.sp,
-                            maxLines = 1
-                        )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = SignatureStudioColors.cyan.copy(alpha = .16f),
-                        selectedLabelColor = SignatureStudioColors.cyan
-                    )
-                )
             }
         }
 
@@ -1170,9 +1092,9 @@ private fun SignatureLiveMenuPanel(
                         fontSize = 11.sp,
                         lineHeight = 16.sp
                     )
-                    if (state.rawResponseReceived) {
+                    if (state.rawResponseReceived && state.lastAttemptPreviewText.isNotEmpty()) {
                         Text(
-                            "Raw response (${state.lastAttemptDurationMs} ms): ${state.lastAttemptRawResponse}",
+                            "Response preview (${state.lastAttemptPreviewText.length}/$LIVE_MENU_PREVIEW_MAX_CHARS chars · ${state.lastAttemptDurationMs} ms):\n${state.lastAttemptPreviewText}",
                             color = SignatureStudioColors.t2,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace
@@ -1183,6 +1105,48 @@ private fun SignatureLiveMenuPanel(
                             "Showing the last valid menu below for reference. Refresh cleanly before saving any position.",
                             color = SignatureStudioColors.t2,
                             fontSize = 10.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        val extractedPreviewToShow = when {
+            state.rawResponseReceived && state.lastAttemptPreviewText.isNotEmpty() -> state.lastAttemptPreviewText
+            state.validPreviewText.isNotEmpty() -> state.validPreviewText
+            else -> ""
+        }
+        if (extractedPreviewToShow.isNotEmpty()) {
+            Surface(
+                Modifier.fillMaxWidth(),
+                color = SignatureStudioColors.ink,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, SignatureStudioColors.border)
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "SILENT CARRIER RESPONSE PREVIEW",
+                            color = SignatureStudioColors.cyan,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = .8.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "${extractedPreviewToShow.length}/$LIVE_MENU_PREVIEW_MAX_CHARS chars",
+                            color = SignatureStudioColors.t3,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    SelectionContainer {
+                        Text(
+                            extractedPreviewToShow,
+                            color = SignatureStudioColors.t1,
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            fontFamily = FontFamily.Monospace
                         )
                     }
                 }
@@ -1425,7 +1389,7 @@ private fun SimpleSignatureSettingsPanel(
                             fontSize = 10.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                     }
                 }
-                Text("Verification uses 0712345678 as a placeholder. Choices 1–7 are on page 1; later choices cannot run silently. Prices are ignored when matching offers.",
+                Text("Verification uses 0790993046 as a placeholder. Choices 1–7 are on page 1; later choices cannot run silently. Prices are ignored when matching offers.",
                     color = SignatureStudioColors.t2, fontSize = 11.sp, lineHeight = 15.sp)
             }
         }
@@ -1639,7 +1603,7 @@ private fun SignatureLearnPanel(
             SignatureSectionIntro(
                 eyebrow = "SIGNATURE LEARNING",
                 title = "Choose an offer to learn",
-                description = "Select the bundle you want to teach Bingwa. Learning records carrier menu text and choices for review; it does not submit a purchase. Verification uses 0712345678.",
+                description = "Select the bundle you want to teach Bingwa. Learning records carrier menu text and choices for review; it does not submit a purchase. Verification uses 0790993046.",
                 accent = SignatureStudioColors.cyan
             )
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

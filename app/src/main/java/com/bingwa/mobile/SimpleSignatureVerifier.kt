@@ -1,5 +1,41 @@
 package com.bingwa.mobile
 
+internal const val LIVE_MENU_FULL_USSD_CODE: String = "*180*5*2*0790993046#"
+internal const val LIVE_MENU_PREVIEW_MAX_CHARS: Int = 132
+
+/**
+ * Normalizes real and escaped line breaks from Android's silent USSD callback while
+ * preserving menu numbering and meaningful line structure. Safe for null/empty input.
+ */
+internal fun normalizeSilentUssdResponse(response: String?): String {
+    if (response.isNullOrEmpty()) return ""
+    val unescaped = response
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .replace("\r\n", "\n")
+        .replace('\r', '\n')
+    val normalizedLines = unescaped
+        .split('\n')
+        .map { line -> line.replace(Regex("""[^\S\n]+"""), " ").trim() }
+        .filter { it.isNotEmpty() }
+    return normalizedLines.joinToString("\n").trim()
+}
+
+/**
+ * Extracts up to [maxChars] (default 132) characters from a real carrier USSD response
+ * without throwing index errors or fabricating text on empty/null responses.
+ */
+internal fun extractSilentUssdPreview(
+    response: String?,
+    maxChars: Int = LIVE_MENU_PREVIEW_MAX_CHARS
+): String {
+    if (maxChars <= 0) return ""
+    val normalized = normalizeSilentUssdResponse(response)
+    if (normalized.isEmpty()) return ""
+    return if (normalized.length <= maxChars) normalized else normalized.take(maxChars)
+}
+
 /**
  * Fail-closed verifier for Simple mode. It compares only the saved menu identity
  * at the saved position; price is intentionally excluded.
@@ -16,7 +52,7 @@ internal object SimpleSignatureVerifier {
 
     // Fixed recipient used only for the silent Simple-signature preflight request.
     // It is never substituted into the real purchase request.
-    private const val VERIFICATION_PHONE_NUMBER = "0712345678"
+    internal const val VERIFICATION_PHONE_NUMBER = "0790993046"
 
     private val delimitedOptionLine = Regex("""^\s*([1-9]\d?)(\s*)([\).:\-])(\s*)(.+?)\s*$""")
     private val spaceOptionLine = Regex("""^\s*([1-9]\d?)\s+(.+?)\s*$""")
@@ -53,7 +89,10 @@ internal object SimpleSignatureVerifier {
         if (parts.isEmpty() || parts.any(String::isBlank)) return null
 
         fun isPhoneMarker(value: String): Boolean =
-            value.equals("pn", true) || value.equals("[pn]", true) || value == VERIFICATION_PHONE_NUMBER
+            value.equals("pn", true) ||
+                value.equals("[pn]", true) ||
+                value == VERIFICATION_PHONE_NUMBER ||
+                value == "0712345678"
         fun isPositionMarker(value: String): Boolean =
             value.equals("position", true) || value.equals("[position]", true)
 
@@ -74,7 +113,7 @@ internal object SimpleSignatureVerifier {
             // carrier sequence before the native silent-dial boundary.
             if (prefix != listOf("180", "2", "5") && prefix != listOf("180", "5", "2")) return null
             if (!isPhoneMarker(parts[markerIndex])) return null
-            return "*180*5*2*$VERIFICATION_PHONE_NUMBER#"
+            return LIVE_MENU_FULL_USSD_CODE
         }
 
         val prefixCode = "*${prefix.joinToString("*")}"
@@ -90,18 +129,14 @@ internal object SimpleSignatureVerifier {
      *
      * Some Android/carrier combinations return one flattened line rather than
      * separate lines. Prefer the normal line parser, then split a flattened
-     * response at explicit numbered menu markers. This is read-only parsing:
-     * it never submits a menu choice or starts another USSD request.
+     * response at explicit numbered menu markers. Always calculates substring
+     * bounds against the same [normalizedResponse] string that was matched.
+     * This is read-only parsing: it never submits a menu choice or starts
+     * another USSD request.
      */
-    fun menuOptions(response: String): List<Pair<Int, String>> {
-        if (response.isBlank() || isCarrierRetryLimitResponse(response)) return emptyList()
-        // Native callbacks usually contain real line breaks, but some carrier
-        // bridges expose the escaped two-character sequence "\\n". Normalize
-        // both forms before parsing so numbered options are not merged.
-        val normalizedResponse = response
-            .replace("\\r", " ")
-            .replace("\\n", "\n")
-            .replace('\r', ' ')
+    fun menuOptions(response: String?): List<Pair<Int, String>> {
+        val normalizedResponse = normalizeSilentUssdResponse(response)
+        if (normalizedResponse.isBlank() || isCarrierRetryLimitResponse(normalizedResponse)) return emptyList()
         val lineOptions = normalizedResponse.lineSequence()
             .mapNotNull(::parseOptionLine)
             .distinctBy { it.first }
@@ -114,9 +149,10 @@ internal object SimpleSignatureVerifier {
         if (markers.size < 2) return lineOptions
 
         val flattened = markers.mapIndexedNotNull { index, marker ->
-            val start = marker.range.last + 1
-            val end = markers.getOrNull(index + 1)?.range?.first ?: response.length
-            val label = response.substring(start, end)
+            val start = (marker.range.last + 1).coerceIn(0, normalizedResponse.length)
+            val end = (markers.getOrNull(index + 1)?.range?.first ?: normalizedResponse.length)
+                .coerceIn(start, normalizedResponse.length)
+            val label = normalizedResponse.substring(start, end)
                 .replace('\n', ' ')
                 .replace(Regex("""\s+"""), " ")
                 .trim()
@@ -129,7 +165,7 @@ internal object SimpleSignatureVerifier {
     }
 
     /** First-screen choices only. Position 8 and later belong to another screen. */
-    fun firstScreenMenuOptions(response: String): List<Pair<Int, String>> =
+    fun firstScreenMenuOptions(response: String?): List<Pair<Int, String>> =
         menuOptions(response).filter { it.first in 1..7 }
 
     private fun parseOptionLine(rawLine: String): Pair<Int, String>? {

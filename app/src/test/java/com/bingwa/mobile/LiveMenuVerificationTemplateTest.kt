@@ -1,17 +1,24 @@
 package com.bingwa.mobile
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiveMenuVerificationTemplateTest {
-    @Test fun liveMenuHasFixedSafaricomVerificationTemplateWithoutAnOffer() {
-        assertEquals("*180*5*2*pn#", resolveLiveMenuVerificationTemplate(""))
-        assertEquals("*180*5*2*pn#", resolveLiveMenuVerificationTemplate("   "))
+    @Test fun liveMenuAlwaysUsesCompleteSafaricomRequestNeverShort180() {
+        assertEquals("*180*5*2*0790993046#", resolveLiveMenuUssdRequest())
+        assertEquals("*180*5*2*0790993046#", LIVE_MENU_FULL_USSD_CODE)
+        assertNotEquals("*180#", resolveLiveMenuUssdRequest())
+        assertNull(SimpleSignatureVerifier.previewCode("*180#"))
     }
 
-    @Test fun savedWorkspaceTemplateOverridesTheBuiltInDefault() {
-        assertEquals("*444*5*1*pn#", resolveLiveMenuVerificationTemplate("  *444*5*1*pn#  "))
+    @Test fun liveMenuVerificationTemplateCannotBeOverriddenWithCustomOrShortCodes() {
+        assertEquals("*180*5*2*pn#", resolveLiveMenuVerificationTemplate(""))
+        assertEquals("*180*5*2*pn#", resolveLiveMenuVerificationTemplate("   "))
+        assertEquals("*180*5*2*pn#", resolveLiveMenuVerificationTemplate("*180#"))
+        assertEquals("*180*5*2*pn#", resolveLiveMenuVerificationTemplate("  *444*5*1*pn#  "))
     }
 
     @Test fun genericAndroidFailureExplainsKnownAndroid12GsmCausesWithoutInventingCarrierText() {

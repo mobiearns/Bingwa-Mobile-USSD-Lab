@@ -170,6 +170,13 @@ internal object UssdPerformanceDiagnostics {
 
     fun latestSilentSignatureMenuReport(): String = silentSignatureMenuReport
 
+    @Volatile private var lastSilentRequestStartedWallMs: Long = 0L
+
+    private fun formatStartTimestamp(wallMs: Long): String {
+        if (wallMs <= 0L) return "not recorded"
+        return java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(java.util.Date(wallMs))
+    }
+
     /** Keep the latest silent Live Menu attempt for Setup Doctor & Live Menu diagnostics. */
     fun recordSilentSignatureMenuStarted(
         simDescription: String,
@@ -177,27 +184,35 @@ internal object UssdPerformanceDiagnostics {
         carrierConfig: String = "not inspected",
         telephonyReadiness: String = "not inspected",
         previousMenuRetained: Boolean = false,
-        sourceSummary: String = "not captured"
+        sourceSummary: String = "not captured",
+        startedAtWallMs: Long = System.currentTimeMillis()
     ) {
         lastSilentSimRouting = simDescription
         lastSilentTelephonyReadiness = telephonyReadiness
         lastSilentCarrierConfig = carrierConfig
         lastSilentSourceSummary = sourceSummary
         lastSilentAndroidSdk = sdk
+        lastSilentRequestStartedWallMs = startedAtWallMs
         silentPreDispatchSnapshot = "not captured"
         silentAcceptedSnapshot = "not captured"
         silentCallbackSnapshot = "not captured"
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Request start time: ${formatStartTimestamp(startedAtWallMs)}")
+            appendLine("Request lifecycle state: IN_PROGRESS")
             appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $simDescription")
             appendLine("Telephony readiness: $telephonyReadiness")
             appendLine("Carrier telephony USSD policy: $carrierConfig")
             appendLine("Android SDK: $sdk")
             appendLine("Duration: in progress")
+            appendLine("Extraction duration: pending")
             appendLine("Callback outcome: REQUEST STARTED")
+            appendLine("Android callback error code: none")
             appendLine("Raw response text received: Pending")
+            appendLine("Response character count: 0")
             appendLine("Parsed menu options count: 0")
+            appendLine("Parsing result: PENDING")
             appendLine("Carrier retry-limit response: No")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: No")
@@ -216,27 +231,45 @@ internal object UssdPerformanceDiagnostics {
         optionCount: Int,
         elapsedMs: Long,
         isCarrierRetryLimit: Boolean = SimpleSignatureVerifier.isCarrierRetryLimitResponse(response),
-        previousMenuRetained: Boolean = false
+        previousMenuRetained: Boolean = false,
+        extractionDurationMs: Long = 0L
     ) {
         val outcome = when {
             isCarrierRetryLimit -> "CALLBACK SUCCESS · CARRIER RETRY LIMIT"
             optionCount > 0 -> "CALLBACK SUCCESS · VALID MENU"
             else -> "CALLBACK SUCCESS · NO PARSED OPTIONS"
         }
+        val lifecycleState = when {
+            isCarrierRetryLimit -> "COMPLETED_CARRIER_RETRY_LIMIT"
+            optionCount > 0 -> "COMPLETED_VALID_MENU"
+            else -> "COMPLETED_NO_MENU_OPTIONS"
+        }
+        val parsingResult = when {
+            isCarrierRetryLimit -> "CARRIER_RETRY_LIMIT"
+            optionCount > 0 -> "PARSED_${optionCount}_OPTIONS"
+            response.isBlank() -> "EMPTY_RESPONSE"
+            else -> "NO_NUMBERED_OPTIONS"
+        }
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Request start time: ${formatStartTimestamp(lastSilentRequestStartedWallMs)}")
+            appendLine("Request lifecycle state: $lifecycleState")
             appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $lastSilentSimRouting")
             appendLine("Telephony readiness: $lastSilentTelephonyReadiness")
             appendLine("Carrier telephony USSD policy: $lastSilentCarrierConfig")
             appendLine("Android SDK: $lastSilentAndroidSdk")
             appendLine("Duration: $elapsedMs ms")
+            appendLine("Extraction duration: $extractionDurationMs ms")
             appendLine("Callback outcome: $outcome")
+            appendLine("Android callback error code: none (success)")
             appendLine(
                 "Raw response text received: " +
                     if (response.isNotEmpty()) "Yes (${response.length} chars)" else "No (0 chars)"
             )
+            appendLine("Response character count: ${response.length}")
             appendLine("Parsed menu options count: $optionCount")
+            appendLine("Parsing result: $parsingResult")
             appendLine("Carrier retry-limit response: ${if (isCarrierRetryLimit) "Yes" else "No"}")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: No")
@@ -255,24 +288,36 @@ internal object UssdPerformanceDiagnostics {
         error: String,
         elapsedMs: Long,
         requestStarted: Boolean,
-        previousMenuRetained: Boolean = false
+        previousMenuRetained: Boolean = false,
+        callbackErrorCode: Int? = null
     ) {
+        val isAppTimeout = error.contains("response wait timed out", ignoreCase = true)
+        val lifecycleState = when {
+            !requestStarted -> "FAILED_NOT_STARTED"
+            isAppTimeout -> "APP_TIMEOUT_UNRESOLVED"
+            else -> "FAILED_CALLBACK"
+        }
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Request start time: ${formatStartTimestamp(lastSilentRequestStartedWallMs)}")
+            appendLine("Request lifecycle state: $lifecycleState")
             appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $lastSilentSimRouting")
             appendLine("Telephony readiness: $lastSilentTelephonyReadiness")
             appendLine("Carrier telephony USSD policy: $lastSilentCarrierConfig")
             appendLine("Android SDK: $lastSilentAndroidSdk")
             appendLine("Duration: $elapsedMs ms")
-            val isAppTimeout = error.contains("response wait timed out", ignoreCase = true)
+            appendLine("Extraction duration: 0 ms")
             appendLine("Callback outcome: ${when {
                 !requestStarted -> "REQUEST COULD NOT START"
                 isAppTimeout -> "APP TIMEOUT · NATIVE REQUEST STILL UNRESOLVED"
                 else -> "ANDROID CALLBACK FAILURE"
             }}")
+            appendLine("Android callback error code: ${callbackErrorCode ?: "none"}")
             appendLine("Raw response text received: No — Android failure callback provides no carrier response text")
+            appendLine("Response character count: 0")
             appendLine("Parsed menu options count: 0")
+            appendLine("Parsing result: NO_RESPONSE_FAILURE")
             appendLine("Carrier retry-limit response: No")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: No")
@@ -301,15 +346,21 @@ internal object UssdPerformanceDiagnostics {
         lastSilentAndroidSdk = Build.VERSION.SDK_INT
         silentSignatureMenuReport = buildString {
             appendLine("Request method: Android TelephonyManager.sendUssdRequest")
+            appendLine("Request start time: ${formatStartTimestamp(lastSilentRequestStartedWallMs)}")
+            appendLine("Request lifecycle state: BLOCKED_OVERLAP")
             appendLine("Menu source (redacted): $lastSilentSourceSummary")
             appendLine("Selected SIM slot & status: $simDescription")
             appendLine("Telephony readiness: $telephonyReadiness")
             appendLine("Carrier telephony USSD policy: $carrierConfig")
             appendLine("Android SDK: $lastSilentAndroidSdk")
             appendLine("Duration: 0 ms")
+            appendLine("Extraction duration: 0 ms")
             appendLine("Callback outcome: BLOCKED · REQUEST ALREADY RUNNING")
+            appendLine("Android callback error code: none")
             appendLine("Raw response text received: No — request blocked before sending")
+            appendLine("Response character count: 0")
             appendLine("Parsed menu options count: 0")
+            appendLine("Parsing result: BLOCKED_NOT_SENT")
             appendLine("Carrier retry-limit response: No")
             appendLine("Previous valid menu retained: ${if (previousMenuRetained) "Yes" else "No"}")
             appendLine("Blocked because request already running: Yes")

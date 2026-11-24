@@ -12,12 +12,19 @@ internal const val LIVE_MENU_AUTO_REFRESH_INTERVAL_MS: Long = 12 * 60_000L
 internal const val LIVE_MENU_CUSTOM_SOURCE_ID: Int = Int.MIN_VALUE
 internal const val DEFAULT_LIVE_MENU_VERIFICATION_TEMPLATE: String = "*180*5*2*pn#"
 
-internal fun resolveLiveMenuVerificationTemplate(savedTemplate: String): String =
-    savedTemplate.trim().ifBlank { DEFAULT_LIVE_MENU_VERIFICATION_TEMPLATE }
+/**
+ * Live Menu always executes ONLY the fixed full USSD request "*180*5*2*0790993046#"
+ * directly via TelephonyManager.sendUssdRequest(), never "*180#" and never a shorter fallback.
+ */
+internal fun resolveLiveMenuUssdRequest(): String = LIVE_MENU_FULL_USSD_CODE
+
+internal fun resolveLiveMenuVerificationTemplate(@Suppress("UNUSED_PARAMETER") savedTemplate: String): String =
+    DEFAULT_LIVE_MENU_VERIFICATION_TEMPLATE
 
 internal data class SignatureLiveMenuState(
     // Last successfully captured and parsed menu (kept separate from latest attempt)
     val validResponse: String = "",
+    val validPreviewText: String = "",
     val validOptions: List<Pair<Int, String>> = emptyList(),
     val lastSuccessAt: Long = 0L,
     val stale: Boolean = false,
@@ -26,10 +33,15 @@ internal data class SignatureLiveMenuState(
     val loading: Boolean = false,
     val lastAttemptAt: Long = 0L,
     val lastAttemptDurationMs: Long = 0L,
+    val lastExtractionDurationMs: Long = 0L,
+    val lastResponseCharCount: Int = 0,
     val lastAttemptMethod: String = "Android TelephonyManager.sendUssdRequest",
     val lastAttemptOutcome: String = "IDLE",
+    val lastLifecycleState: String = "IDLE",
+    val lastCallbackErrorCode: Int? = null,
     val lastAttemptError: String = "",
     val lastAttemptRawResponse: String = "",
+    val lastAttemptPreviewText: String = "",
     val rawResponseReceived: Boolean = false,
     val lastParsedOptionCount: Int = 0,
     val isCarrierRetryLimit: Boolean = false,
@@ -98,6 +110,8 @@ internal fun reduceLiveMenuStart(
     loading = true,
     lastAttemptAt = startedAtWallMs,
     lastAttemptOutcome = "IN_PROGRESS",
+    lastLifecycleState = "IN_PROGRESS",
+    lastCallbackErrorCode = null,
     lastAttemptError = "",
     blockedBecauseRunning = false,
     simDescription = simDescription,
@@ -113,21 +127,29 @@ internal fun reduceLiveMenuSuccess(
     rawResponse: String,
     parsedOptions: List<Pair<Int, String>>,
     elapsedMs: Long,
-    completedAtWallMs: Long
+    completedAtWallMs: Long,
+    extractionDurationMs: Long = 0L
 ): SignatureLiveMenuState {
+    val preview132 = extractSilentUssdPreview(rawResponse)
     val retryLimit = SimpleSignatureVerifier.isCarrierRetryLimitResponse(rawResponse)
     val validCapture = parsedOptions.isNotEmpty() && !retryLimit
     if (validCapture) {
         return previous.copy(
             validResponse = rawResponse,
+            validPreviewText = preview132,
             validOptions = parsedOptions,
             lastSuccessAt = completedAtWallMs,
             stale = false,
             loading = false,
             lastAttemptDurationMs = elapsedMs,
+            lastExtractionDurationMs = extractionDurationMs,
+            lastResponseCharCount = rawResponse.length,
             lastAttemptOutcome = "CALLBACK SUCCESS · VALID MENU",
+            lastLifecycleState = "COMPLETED_VALID_MENU",
+            lastCallbackErrorCode = null,
             lastAttemptError = "",
             lastAttemptRawResponse = rawResponse,
+            lastAttemptPreviewText = preview132,
             rawResponseReceived = true,
             lastParsedOptionCount = parsedOptions.size,
             isCarrierRetryLimit = false,
@@ -146,11 +168,16 @@ internal fun reduceLiveMenuSuccess(
             stale = retained,
             loading = false,
             lastAttemptDurationMs = elapsedMs,
+            lastExtractionDurationMs = extractionDurationMs,
+            lastResponseCharCount = rawResponse.length,
             lastAttemptOutcome = "CALLBACK SUCCESS · CARRIER RETRY LIMIT",
+            lastLifecycleState = "COMPLETED_CARRIER_RETRY_LIMIT",
+            lastCallbackErrorCode = null,
             lastAttemptError = "Carrier returned \"Max Number of Menu Retries is Reached\". " +
                 "This is a response from the carrier network delivered via Android's USSD callback, not an Android API failure. " +
                 "Automatic refresh has been paused; wait briefly and use manual Refresh.",
             lastAttemptRawResponse = rawResponse,
+            lastAttemptPreviewText = preview132,
             rawResponseReceived = rawResponse.isNotEmpty(),
             lastParsedOptionCount = 0,
             isCarrierRetryLimit = true,
@@ -175,9 +202,14 @@ internal fun reduceLiveMenuSuccess(
         stale = retained,
         loading = false,
         lastAttemptDurationMs = elapsedMs,
+        lastExtractionDurationMs = extractionDurationMs,
+        lastResponseCharCount = rawResponse.length,
         lastAttemptOutcome = if (safaricomServiceError) "CALLBACK SUCCESS · SAFARICOM ERROR RESPONSE" else "CALLBACK SUCCESS · NO PARSED OPTIONS",
+        lastLifecycleState = "COMPLETED_NO_MENU_OPTIONS",
+        lastCallbackErrorCode = null,
         lastAttemptError = noMenuError,
         lastAttemptRawResponse = rawResponse,
+        lastAttemptPreviewText = preview132,
         rawResponseReceived = rawResponse.isNotEmpty(),
         lastParsedOptionCount = 0,
         isCarrierRetryLimit = false,
@@ -194,25 +226,32 @@ internal fun reduceLiveMenuFailure(
     error: String,
     elapsedMs: Long,
     requestStarted: Boolean,
-    completedAtWallMs: Long
+    completedAtWallMs: Long,
+    callbackErrorCode: Int? = null
 ): SignatureLiveMenuState {
     val retained = previous.validOptions.isNotEmpty()
     return previous.copy(
-        // Never overwrite validResponse / validOptions / lastSuccessAt on failure.
+        // Never overwrite validResponse / validPreviewText / validOptions / lastSuccessAt on failure.
         stale = retained,
         loading = false,
         lastAttemptAt = if (previous.lastAttemptAt == 0L) completedAtWallMs else previous.lastAttemptAt,
         lastAttemptDurationMs = elapsedMs,
+        lastExtractionDurationMs = 0L,
+        lastResponseCharCount = 0,
         lastAttemptOutcome = if (requestStarted) "CALLBACK FAILURE" else "REQUEST NOT STARTED",
+        lastLifecycleState = if (requestStarted) "FAILED_CALLBACK" else "FAILED_NOT_STARTED",
+        lastCallbackErrorCode = callbackErrorCode,
         lastAttemptError = error,
         lastAttemptRawResponse = "",
+        lastAttemptPreviewText = "",
         rawResponseReceived = false,
         lastParsedOptionCount = 0,
         isCarrierRetryLimit = false,
         isSafaricomServiceError = false,
         previousMenuRetained = retained,
         blockedBecauseRunning = false,
-        autoRefreshPausedByNativeFailure = error.contains("USSD_RETURN_FAILURE", ignoreCase = true)
+        autoRefreshPausedByNativeFailure = callbackErrorCode == android.telephony.TelephonyManager.USSD_RETURN_FAILURE ||
+            error.contains("USSD_RETURN_FAILURE", ignoreCase = true)
     )
 }
 
@@ -228,6 +267,7 @@ internal fun reduceLiveMenuBlocked(
         blockedBecauseRunning = true,
         previousMenuRetained = retained,
         lastAttemptOutcome = "BLOCKED · REQUEST ALREADY RUNNING",
+        lastLifecycleState = "BLOCKED_OVERLAP",
         lastAttemptError = reason,
         lastAttemptDurationMs = 0L,
         simDescription = simDescription,
@@ -266,12 +306,15 @@ internal fun secondsUntilNextAutoRefresh(
 
 internal fun formatLiveMenuDiagnosticsSummary(state: SignatureLiveMenuState): String = buildString {
     appendLine("Request method: ${state.lastAttemptMethod}")
+    appendLine("Request lifecycle state: ${state.lastLifecycleState}")
     appendLine("Menu source (redacted): ${state.sourceSummary}")
     appendLine("Selected SIM slot & status: ${state.simDescription}")
     appendLine("Telephony readiness: ${state.telephonyReadiness}")
     appendLine("Carrier USSD policy: ${state.carrierConfig}")
     appendLine("Request duration: ${state.lastAttemptDurationMs} ms")
+    appendLine("Extraction duration: ${state.lastExtractionDurationMs} ms")
     appendLine("Callback outcome: ${state.lastAttemptOutcome}")
+    appendLine("Android callback error code: ${state.lastCallbackErrorCode ?: "none"}")
     appendLine(
         "Raw response text received: " + if (state.rawResponseReceived) {
             "Yes (${state.lastAttemptRawResponse.length} chars)"
@@ -279,6 +322,7 @@ internal fun formatLiveMenuDiagnosticsSummary(state: SignatureLiveMenuState): St
             "No — Android supplied no carrier response text"
         }
     )
+    appendLine("Response character count: ${state.lastResponseCharCount}")
     appendLine("Parsed menu options: ${state.lastParsedOptionCount}")
     appendLine("Carrier retry-limit response: ${if (state.isCarrierRetryLimit) "Yes" else "No"}")
     appendLine("Previous valid menu retained: ${if (state.previousMenuRetained) "Yes (${state.validOptions.size} options)" else "No"}")
@@ -288,9 +332,9 @@ internal fun formatLiveMenuDiagnosticsSummary(state: SignatureLiveMenuState): St
         appendLine("Explanation: ${state.lastAttemptError}")
     }
     appendLine()
-    appendLine("Raw carrier response:")
-    if (state.rawResponseReceived) {
-        appendLine(state.lastAttemptRawResponse)
+    appendLine("Extracted silent preview (up to $LIVE_MENU_PREVIEW_MAX_CHARS chars):")
+    if (state.rawResponseReceived && state.lastAttemptPreviewText.isNotEmpty()) {
+        appendLine(state.lastAttemptPreviewText)
     } else {
         appendLine("[No response text was delivered by Android for this attempt]")
     }
@@ -336,20 +380,14 @@ internal object SignatureLiveMenuCoordinator {
         forceManual: Boolean
     ): Boolean {
         val appContext = context.applicationContext
-        val liveMenuCode = SignatureStudioStore.liveMenuCode(appContext)
         val liveMenuSim = SignatureStudioStore.liveMenuSim(appContext)
 
-        // Live Menu is a read-only carrier catalogue, not an offer execution.
-        // Its verification request must never depend on a selected offer, its price,
-        // or its purchase-code suffix. Use the saved workspace template when present;
-        // otherwise use the fixed Safaricom first-screen verification route.
-        val sourceCode = resolveLiveMenuVerificationTemplate(liveMenuCode)
-        val preview = SimpleSignatureVerifier.previewCode(sourceCode)
-        val sourceSummary = if (liveMenuCode.isBlank()) {
-            "Built-in Safaricom Live Menu verification template"
-        } else {
-            "Saved Live Menu verification template"
-        }
+        // Live Menu is strictly a read-only silent carrier response capture.
+        // It executes ONLY the complete Safaricom USSD request ("*180*5*2*0790993046#")
+        // directly via TelephonyManager.sendUssdRequest() — never "*180#", never a
+        // shorter fallback, and never an interactive popup.
+        val requestCode = resolveLiveMenuUssdRequest()
+        val sourceSummary = "Fixed Safaricom Live Menu verification request"
         // SIM selection belongs to the Live Menu workspace itself. Do not inherit
         // the SIM attached to whichever offer happens to be selected for learning.
         val selectedSim = liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
@@ -461,33 +499,6 @@ internal object SignatureLiveMenuCoordinator {
                 return false
             }
 
-            if (preview.isNullOrBlank()) {
-                val reason = "The Live Menu verification template is invalid or missing its phone-number placeholder. Restore the default Safaricom template or correct the saved template; no offer selection is required to view Live Menu."
-                val failedState = reduceLiveMenuFailure(
-                    previous = current.copy(
-                        simDescription = simDescription,
-                        telephonyReadiness = telephonyReadiness,
-                        carrierConfig = carrierConfig,
-                        sourceOfferName = "Live Menu verification",
-                        sourceSummary = sourceSummary,
-                        simAdvice = simAdvice,
-                        recommendedSimSelection = recommendedSimSelection
-                    ),
-                    error = reason,
-                    elapsedMs = 0L,
-                    requestStarted = false,
-                    completedAtWallMs = nowWall
-                )
-                _state.value = failedState
-                UssdPerformanceDiagnostics.recordSilentSignatureMenuFailure(
-                    error = reason,
-                    elapsedMs = 0L,
-                    requestStarted = false,
-                    previousMenuRetained = failedState.previousMenuRetained
-                )
-                return false
-            }
-
             requestInFlight = true
             val startedState = reduceLiveMenuStart(
                 previous = current,
@@ -508,7 +519,8 @@ internal object SignatureLiveMenuCoordinator {
                 carrierConfig = carrierConfig,
                 telephonyReadiness = telephonyReadiness,
                 previousMenuRetained = startedState.hasValidMenu,
-                sourceSummary = sourceSummary
+                sourceSummary = sourceSummary,
+                startedAtWallMs = nowWall
             )
         }
 
@@ -519,7 +531,7 @@ internal object SignatureLiveMenuCoordinator {
         val started = try {
             UssdHelper.dialUssd(
                 context = appContext,
-                ussdCode = preview.orEmpty(),
+                ussdCode = requestCode,
                 silentOnly = true,
                 subIdOverride = selectedSim,
                 preserveRawResponse = true,
@@ -528,11 +540,13 @@ internal object SignatureLiveMenuCoordinator {
                     val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
                     val completedWall = System.currentTimeMillis()
                     val parseStartedAt = UssdPerformanceDiagnostics.mark()
+                    val extractStartElapsed = SystemClock.elapsedRealtime()
                     val options = SimpleSignatureVerifier.firstScreenMenuOptions(response)
+                    val extractionDurationMs = (SystemClock.elapsedRealtime() - extractStartElapsed).coerceAtLeast(0L)
                     UssdPerformanceDiagnostics.record(
                         "silent.response_parse",
                         parseStartedAt,
-                        "responseChars=${response.length} parsedOptions=${options.size} classification=${if (options.isNotEmpty()) "menu" else "non_menu_response"}"
+                        "responseChars=${response.length} parsedOptions=${options.size} extractionMs=$extractionDurationMs classification=${if (options.isNotEmpty()) "menu" else "non_menu_response"}"
                     )
                     val updated = synchronized(lock) {
                         requestInFlight = false
@@ -541,7 +555,8 @@ internal object SignatureLiveMenuCoordinator {
                             rawResponse = response,
                             parsedOptions = options,
                             elapsedMs = elapsed,
-                            completedAtWallMs = completedWall
+                            completedAtWallMs = completedWall,
+                            extractionDurationMs = extractionDurationMs
                         )
                         _state.value = next
                         next
@@ -551,10 +566,12 @@ internal object SignatureLiveMenuCoordinator {
                         optionCount = options.size,
                         elapsedMs = elapsed,
                         isCarrierRetryLimit = updated.isCarrierRetryLimit,
-                        previousMenuRetained = updated.previousMenuRetained
+                        previousMenuRetained = updated.previousMenuRetained,
+                        extractionDurationMs = extractionDurationMs
                     )
                 },
                 onFailure = { error ->
+                    val failureCode = SilentUssdOptimized.lastFailureCode()
                     val wasBusy = error.contains("already in progress", ignoreCase = true)
                     val nativeSessionMayRemainPending =
                         SilentUssdOptimized.nativeSessionMayBePending()
@@ -577,6 +594,7 @@ internal object SignatureLiveMenuCoordinator {
                         completedWall = System.currentTimeMillis(),
                         requestStarted = !dialCallInProgress.get(),
                         wasBusy = wasBusy,
+                        callbackErrorCode = failureCode,
                         simDescription = simDescription,
                         telephonyReadiness = telephonyReadiness,
                         carrierConfig = carrierConfig,
@@ -591,6 +609,7 @@ internal object SignatureLiveMenuCoordinator {
         if (!started && callbackHandled.compareAndSet(false, true)) {
             val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
             val completedWall = System.currentTimeMillis()
+            val failureCode = SilentUssdOptimized.lastFailureCode()
             val reason = "UssdHelper could not initiate the silent request. Check CALL_PHONE permission, active SIM routing, telephony readiness, and Android API support."
             val updated = synchronized(lock) {
                 requestInFlight = false
@@ -599,7 +618,8 @@ internal object SignatureLiveMenuCoordinator {
                     error = reason,
                     elapsedMs = elapsed,
                     requestStarted = false,
-                    completedAtWallMs = completedWall
+                    completedAtWallMs = completedWall,
+                    callbackErrorCode = failureCode
                 )
                 _state.value = next
                 next
@@ -608,7 +628,8 @@ internal object SignatureLiveMenuCoordinator {
                 error = reason,
                 elapsedMs = elapsed,
                 requestStarted = false,
-                previousMenuRetained = updated.previousMenuRetained
+                previousMenuRetained = updated.previousMenuRetained,
+                callbackErrorCode = failureCode
             )
             return false
         }
@@ -622,6 +643,7 @@ internal object SignatureLiveMenuCoordinator {
         completedWall: Long,
         requestStarted: Boolean,
         wasBusy: Boolean,
+        callbackErrorCode: Int?,
         simDescription: String,
         telephonyReadiness: String,
         carrierConfig: String,
@@ -645,7 +667,8 @@ internal object SignatureLiveMenuCoordinator {
                     error = error,
                     elapsedMs = elapsed,
                     requestStarted = requestStarted,
-                    completedAtWallMs = completedWall
+                    completedAtWallMs = completedWall,
+                    callbackErrorCode = callbackErrorCode
                 )
             }
             _state.value = next
@@ -664,7 +687,8 @@ internal object SignatureLiveMenuCoordinator {
                 error = error,
                 elapsedMs = elapsed,
                 requestStarted = requestStarted,
-                previousMenuRetained = _state.value.previousMenuRetained
+                previousMenuRetained = _state.value.previousMenuRetained,
+                callbackErrorCode = callbackErrorCode
             )
         }
     }
