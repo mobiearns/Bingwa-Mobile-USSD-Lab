@@ -101,7 +101,7 @@ internal object SimpleSignatureVerifier {
             .toList()
         if (lineOptions.size > 1) return lineOptions
 
-        val markers = Regex("""(?<![\d.])([1-7])\s*[.)]\s+""")
+        val markers = Regex("""(?<![\d.])([1-9])\s*[.)]\s+""")
             .findAll(response.replace('\r', ' '))
             .toList()
         if (markers.size < 2) return lineOptions
