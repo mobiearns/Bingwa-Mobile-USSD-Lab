@@ -27,4 +27,15 @@ class LiveMenuVerificationTemplateTest {
         assertTrue(message.contains("FDN", ignoreCase = true))
         assertTrue(message.contains("no carrier response text", ignoreCase = true))
     }
+
+    @Test fun multiSecondOverTheAirFailureIdentifiesAndroid12InteractiveUssdModeRequestLimit() {
+        val message = describeSilentUssdFailureCode(
+            android.telephony.TelephonyManager.USSD_RETURN_FAILURE,
+            elapsedMs = 5_098L
+        )
+        assertTrue(message.contains("5098ms", ignoreCase = true))
+        assertTrue(message.contains("USSD_MODE_REQUEST", ignoreCase = true))
+        assertTrue(message.contains("USSD_MODE_NOTIFY", ignoreCase = true))
+        assertTrue(message.contains("no carrier response text", ignoreCase = true))
+    }
 }

@@ -16,9 +16,15 @@ import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-internal fun describeSilentUssdFailureCode(code: Int): String = when (code) {
+internal const val SILENT_USSD_OVER_THE_AIR_FAILURE_THRESHOLD_MS: Long = 1_500L
+
+internal fun describeSilentUssdFailureCode(code: Int, elapsedMs: Long = 0L): String = when (code) {
     TelephonyManager.USSD_RETURN_FAILURE ->
-        "USSD_RETURN_FAILURE (-1): Android's generic USSD failure. AOSP's GSM telephony path returns this exact code before radio dispatch when another MMI/USSD session is still pending or Fixed Dialling Number (FDN) blocks the dial string. The carrier API policy can also return this code when the carrier disallows the API. This device report shows GSM phone type and carrier API effectively allowed, so pending MMI/USSD state and FDN remain the important unverified checks. Android exposes neither pending-MMI state nor FDN state to ordinary apps. The callback contains no carrier response text, so Bingwa cannot display a carrier error for this failure unless Android actually supplies one. Close any other USSD session and check that FDN is disabled for the Safaricom SIM."
+        if (elapsedMs >= SILENT_USSD_OVER_THE_AIR_FAILURE_THRESHOLD_MS) {
+            "USSD_RETURN_FAILURE (-1) after ${elapsedMs}ms over-the-air network exchange: Android dispatched the request over the cellular network (not blocked pre-radio by pending MMI or FDN), and Android supplied no carrier response text. On stock Android 12 (AOSP GsmMmiCode / GsmCdmaPhone / TelephonyManager.sendUssdRequest), only terminal one-way responses (USSD_MODE_NOTIFY, such as balance queries like *144#) transition MmiCode to COMPLETE and deliver response text; interactive USSD menus waiting for a reply option (USSD_MODE_REQUEST) leave MmiCode in PENDING, which AOSP maps to USSD_RETURN_FAILURE (-1) and discards the menu text. (A radio or carrier session drop after dispatch can also produce this code.)"
+        } else {
+            "USSD_RETURN_FAILURE (-1): Android's generic USSD failure. AOSP's GSM telephony path returns this exact code before radio dispatch when another MMI/USSD session is still pending or Fixed Dialling Number (FDN) blocks the dial string. The carrier API policy can also return this code when the carrier disallows the API. This device report shows GSM phone type and carrier API effectively allowed, so pending MMI/USSD state and FDN remain the important unverified checks. Android exposes neither pending-MMI state nor FDN state to ordinary apps. The callback contains no carrier response text, so Bingwa cannot display a carrier error for this failure unless Android actually supplies one. Close any other USSD session and check that FDN is disabled for the Safaricom SIM."
+        }
     TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL ->
         "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service was unavailable; Android supplied no carrier response text."
     -3 ->
@@ -56,6 +62,13 @@ object SilentUssdOptimized {
      * a stranded session even after the app-level lock has been released.
      */
     @Volatile private var nativeSessionMayBePending: Boolean = false
+    @Volatile private var lastCallbackCompletedElapsedMs: Long = 0L
+
+    fun millisSinceLastCallback(nowElapsedMs: Long = SystemClock.elapsedRealtime()): Long? {
+        val last = lastCallbackCompletedElapsedMs
+        if (last <= 0L) return null
+        return (nowElapsedMs - last).coerceAtLeast(0L)
+    }
 
     fun execute(
         context: Context,
@@ -155,11 +168,12 @@ object SilentUssdOptimized {
             dispatchStartedAt,
             selectedSubscriptionId
         )
+        val msSincePrevCallback = millisSinceLastCallback()
         if (launchResult == null) {
             UssdPerformanceDiagnostics.record(
                 "silent.dispatch",
                 dispatchStartedAt,
-                "api=TelephonyManager.sendUssdRequest accepted=true codeChars=${code.length} segments=${code.count { it == '*' }} simBound=true retries=0"
+                "api=TelephonyManager.sendUssdRequest accepted=true codeChars=${code.length} segments=${code.count { it == '*' }} simBound=true retries=0 msSincePreviousCallback=${msSincePrevCallback ?: "none"}"
             )
             UssdPerformanceDiagnostics.recordSilentTelephonySnapshot("API_RETURNED_ACCEPTED", describeTelephonyRuntime(telephonyManager))
             Log.d(TAG, "Native TelephonyManager.sendUssdRequest started for req #$requestId")
@@ -300,12 +314,13 @@ object SilentUssdOptimized {
                     val bindingMatches = if (selectedSubscriptionId != null && callbackSubscriptionId != null) {
                         selectedSubscriptionId == callbackSubscriptionId
                     } else null
+                    val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L)
                     val category = when (failureCode) {
                         TelephonyManager.USSD_RETURN_FAILURE -> "ANDROID_GENERIC_FAILURE_CALLBACK"
                         TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "ANDROID_TELEPHONY_SERVICE_UNAVAILABLE"
                         else -> "OTHER_FRAMEWORK_FAILURE"
                     }
-                    val evidence = "failure category=$category code=$failureCode requestEchoMatches=$requestEchoMatches " +
+                    val evidence = "failure category=$category code=$failureCode elapsedMs=$elapsedMs requestEchoMatches=$requestEchoMatches " +
                         "callbackChars=${request.length} callbackSeparators=${request.count { it == '*' }} " +
                         "callbackEndsWithHash=${request.endsWith('#')} callbackHashCount=${request.count { it == '#' }} " +
                         "subscriptionBindingMatches=${bindingMatches ?: "not_available"}"
@@ -313,7 +328,7 @@ object SilentUssdOptimized {
                     UssdPerformanceDiagnostics.recordSilentApiEvidence("Callback context: $evidence")
                     UssdPerformanceDiagnostics.recordSilentFirstFailure(
                         failureCode = failureCode,
-                        elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestStartedAtNanos).coerceAtLeast(0L) / 1_000_000L),
+                        elapsedMs = elapsedMs,
                         requestEchoMatches = requestEchoMatches,
                         subscriptionBindingMatches = bindingMatches
                     )
@@ -322,10 +337,10 @@ object SilentUssdOptimized {
                         requestStartedAtNanos,
                         "outcome=failure failureCode=$failureCode"
                     )
-                    Log.w(TAG, "onReceiveUssdResponseFailed for req #$requestId: failureCode=$failureCode")
+                    Log.w(TAG, "onReceiveUssdResponseFailed for req #$requestId: failureCode=$failureCode elapsedMs=$elapsedMs")
                     deliverFailure(
                         requestId,
-                        describeSilentUssdFailureCode(failureCode),
+                        describeSilentUssdFailureCode(failureCode, elapsedMs),
                         failureCode,
                         callbackSubscriptionId ?: selectedSubscriptionId
                     )
@@ -592,6 +607,7 @@ object SilentUssdOptimized {
             nativeSessionMayBePending = false
             lastFailureCode = null
             lastFailureSubId = null
+            lastCallbackCompletedElapsedMs = SystemClock.elapsedRealtime()
             c
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -648,6 +664,9 @@ object SilentUssdOptimized {
             activeRequestId = 0L
             activeSubscriptionId = null
             isProcessing.set(false)
+            if (failureCode != null) {
+                lastCallbackCompletedElapsedMs = SystemClock.elapsedRealtime()
+            }
             c
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {

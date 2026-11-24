@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal const val LIVE_MENU_AUTO_REFRESH_INTERVAL_MS: Long = 12 * 60_000L
+internal const val LIVE_MENU_POST_CALLBACK_SETTLE_MS: Long = 2_500L
 internal const val LIVE_MENU_CUSTOM_SOURCE_ID: Int = Int.MIN_VALUE
 internal const val DEFAULT_LIVE_MENU_VERIFICATION_TEMPLATE: String = "*180*5*2*pn#"
 
@@ -448,6 +449,26 @@ internal fun resolveLiveMenuSimCandidates(
     }
 }
 
+internal fun shouldDeferAutoRefreshAfterRecentCallback(
+    millisSinceLastCallback: Long?,
+    settleWindowMs: Long = LIVE_MENU_POST_CALLBACK_SETTLE_MS
+): Boolean = millisSinceLastCallback != null && millisSinceLastCallback < settleWindowMs
+
+internal fun formatLiveMenuNativeFailureMessage(
+    baseError: String,
+    elapsedMs: Long,
+    nativeSessionMayRemainPending: Boolean
+): String {
+    if (!nativeSessionMayRemainPending || !baseError.contains("USSD_RETURN_FAILURE", ignoreCase = true)) {
+        return baseError
+    }
+    return if (elapsedMs >= SILENT_USSD_OVER_THE_AIR_FAILURE_THRESHOLD_MS) {
+        "$baseError Because TelephonyManager.sendUssdRequest() on stock Android 12 only delivers terminal single-shot USSD_MODE_NOTIFY text and converts interactive USSD_MODE_REQUEST menus into -1, repeating the same silent API call cannot extract an interactive carrier menu. Automatic refresh has been paused."
+    } else {
+        "$baseError Android may still own the native USSD/MMI session. Bingwa will not issue automatic fallback requests because the public Android API cannot cancel that session. Wait for Android to clear it, or restart the phone/toggle airplane mode before trying again."
+    }
+}
+
 internal fun shouldBlockLiveMenuForNativeSession(
     forceManual: Boolean,
     requestUnresolved: Boolean,
@@ -561,6 +582,9 @@ internal object SignatureLiveMenuCoordinator {
             routing.chosen != null &&
             routing.chosen.subId != SilentUssdOptimized.lastFailureSubId()
         if (!switchingAwayFromFailedSub && !shouldAutoRefreshLiveMenu(current, nowMs)) return false
+        if (shouldDeferAutoRefreshAfterRecentCallback(SilentUssdOptimized.millisSinceLastCallback())) {
+            return false
+        }
         return refresh(context, offers, selectedOfferId, forceManual = false)
     }
 
@@ -789,16 +813,14 @@ internal object SignatureLiveMenuCoordinator {
                 onFailure = { error ->
                     val failureCode = SilentUssdOptimized.lastFailureCode()
                     val wasBusy = error.contains("already in progress", ignoreCase = true)
+                    val elapsedMs = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
                     val nativeSessionMayRemainPending =
                         SilentUssdOptimized.nativeSessionMayBePending()
-                    val reportedError = if (
-                        nativeSessionMayRemainPending &&
-                        error.contains("USSD_RETURN_FAILURE", ignoreCase = true)
-                    ) {
-                        "$error Android may still own the native USSD/MMI session. Bingwa will not issue automatic fallback requests because the public Android API cannot cancel that session. Wait for Android to clear it, or restart the phone/toggle airplane mode before trying again."
-                    } else {
-                        error
-                    }
+                    val reportedError = formatLiveMenuNativeFailureMessage(
+                        baseError = error,
+                        elapsedMs = elapsedMs,
+                        nativeSessionMayRemainPending = nativeSessionMayRemainPending
+                    )
 
                     // A callback failure is terminal for this attempt. In particular,
                     // never clear Android's pending-session marker and send a second
@@ -806,7 +828,7 @@ internal object SignatureLiveMenuCoordinator {
                     handlePrimaryFailure(
                         callbackHandled = callbackHandled,
                         error = reportedError,
-                        elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L),
+                        elapsed = elapsedMs,
                         completedWall = System.currentTimeMillis(),
                         requestStarted = !dialCallInProgress.get(),
                         wasBusy = wasBusy,

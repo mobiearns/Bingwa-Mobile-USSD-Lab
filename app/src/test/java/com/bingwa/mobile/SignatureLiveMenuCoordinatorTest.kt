@@ -441,4 +441,31 @@ class SignatureLiveMenuCoordinatorTest {
         assertTrue(isConfirmedNonSafaricomOperator("63903", "Airtel KE"))
         assertFalse(isConfirmedNonSafaricomOperator("", "SIM 1"))
     }
+
+    @Test fun autoRefreshDefersBrieflyAfterRecentSilentUssdCallback() {
+        assertFalse(shouldDeferAutoRefreshAfterRecentCallback(null))
+        assertTrue(shouldDeferAutoRefreshAfterRecentCallback(1_042L))
+        assertFalse(shouldDeferAutoRefreshAfterRecentCallback(LIVE_MENU_POST_CALLBACK_SETTLE_MS))
+        assertFalse(shouldDeferAutoRefreshAfterRecentCallback(4_000L))
+    }
+
+    @Test fun overTheAirNativeFailureFormatsAndroid12InteractiveMenuGuidanceWithoutRebootAdvice() {
+        val baseError = describeSilentUssdFailureCode(-1, elapsedMs = 5_098L)
+        val formatted = formatLiveMenuNativeFailureMessage(
+            baseError = baseError,
+            elapsedMs = 5_098L,
+            nativeSessionMayRemainPending = true
+        )
+        assertTrue(formatted.contains("USSD_MODE_REQUEST"))
+        assertTrue(formatted.contains("USSD_MODE_NOTIFY"))
+        assertFalse(formatted.contains("toggle airplane mode", ignoreCase = true))
+
+        val fastBase = describeSilentUssdFailureCode(-1, elapsedMs = 300L)
+        val fastFormatted = formatLiveMenuNativeFailureMessage(
+            baseError = fastBase,
+            elapsedMs = 300L,
+            nativeSessionMayRemainPending = true
+        )
+        assertTrue(fastFormatted.contains("toggle airplane mode", ignoreCase = true))
+    }
 }
