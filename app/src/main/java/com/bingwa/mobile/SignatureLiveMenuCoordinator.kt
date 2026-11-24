@@ -10,6 +10,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal const val LIVE_MENU_AUTO_REFRESH_INTERVAL_MS: Long = 12 * 60_000L
 internal const val LIVE_MENU_CUSTOM_SOURCE_ID: Int = Int.MIN_VALUE
+internal const val DEFAULT_LIVE_MENU_VERIFICATION_TEMPLATE: String = "*180*5*2*pn#"
+
+internal fun resolveLiveMenuVerificationTemplate(savedTemplate: String): String =
+    savedTemplate.trim().ifBlank { DEFAULT_LIVE_MENU_VERIFICATION_TEMPLATE }
 
 internal data class SignatureLiveMenuState(
     // Last successfully captured and parsed menu (kept separate from latest attempt)
@@ -321,26 +325,20 @@ internal object SignatureLiveMenuCoordinator {
         val liveMenuCode = SignatureStudioStore.liveMenuCode(appContext)
         val liveMenuSim = SignatureStudioStore.liveMenuSim(appContext)
 
-        // The live-menu workspace resolves its silent verification code from an
-        // eligible Simple-mode offer first (or custom saved template), never from free input.
-        val isCustomSource = selectedOfferId == LIVE_MENU_CUSTOM_SOURCE_ID
-        val sourceOffer = if (isCustomSource) null else selectLiveMenuSourceOffer(offers, selectedOfferId)
-        val sourceCode = if (isCustomSource) liveMenuCode else (sourceOffer?.ussdCode ?: liveMenuCode)
+        // Live Menu is a read-only carrier catalogue, not an offer execution.
+        // Its verification request must never depend on a selected offer, its price,
+        // or its purchase-code suffix. Use the saved workspace template when present;
+        // otherwise use the fixed Safaricom first-screen verification route.
+        val sourceCode = resolveLiveMenuVerificationTemplate(liveMenuCode)
         val preview = SimpleSignatureVerifier.previewCode(sourceCode)
-        val sourceSummary = buildString {
-            append(if (isCustomSource) "Custom verification code" else sourceOffer?.name?.ifBlank { "Custom" } ?: "Saved live-menu code")
-            if (!preview.isNullOrBlank()) {
-                append(" (")
-                append(redactPreviewPattern(preview))
-                append(")")
-            }
-        }
-        val selectedSim = if (isCustomSource) {
-            liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
+        val sourceSummary = if (liveMenuCode.isBlank()) {
+            "Built-in Safaricom Live Menu verification template"
         } else {
-            liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
-                ?: sourceOffer?.simSelection?.takeUnless { it == OFFER_SIM_USE_GENERAL }
+            "Saved Live Menu verification template"
         }
+        // SIM selection belongs to the Live Menu workspace itself. Do not inherit
+        // the SIM attached to whichever offer happens to be selected for learning.
+        val selectedSim = liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
 
         val sims = getAvailableSims(appContext, forceRefresh = true)
         val resolvedTarget = resolveUssdSimTargets(
@@ -421,7 +419,7 @@ internal object SignatureLiveMenuCoordinator {
                         simDescription = simDescription,
                         telephonyReadiness = telephonyReadiness,
                         carrierConfig = carrierConfig,
-                        sourceOfferName = sourceOffer?.name ?: if (isCustomSource) "Custom verification code" else "",
+                        sourceOfferName = "Live Menu verification",
                         sourceSummary = sourceSummary,
                         simAdvice = simAdvice,
                         recommendedSimSelection = recommendedSimSelection
@@ -448,7 +446,7 @@ internal object SignatureLiveMenuCoordinator {
                 simDescription = simDescription,
                 telephonyReadiness = telephonyReadiness,
                 carrierConfig = carrierConfig,
-                sourceOfferName = sourceOffer?.name ?: if (isCustomSource) "Custom verification code" else "",
+                sourceOfferName = "Live Menu verification",
                 sourceSummary = sourceSummary
             ).copy(
                 simAdvice = simAdvice,

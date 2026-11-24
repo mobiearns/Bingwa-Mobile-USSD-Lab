@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal fun describeSilentUssdFailureCode(code: Int): String = when (code) {
     TelephonyManager.USSD_RETURN_FAILURE ->
-        "USSD_RETURN_FAILURE (-1): Android reports that the USSD request failed to complete. AOSP can also map a carrier/API-policy rejection to this same code, so this code alone cannot distinguish policy rejection from telephony/radio/network failure; no carrier response text was supplied."
+        "USSD_RETURN_FAILURE (-1): Android's generic USSD failure. AOSP's GSM telephony path returns this exact code before radio dispatch when another MMI/USSD session is still pending or Fixed Dialling Number (FDN) blocks the dial string. The carrier API policy can also return this code when the carrier disallows the API. This device report shows GSM phone type and carrier API effectively allowed, so pending MMI/USSD state and FDN remain the important unverified checks. Android exposes neither pending-MMI state nor FDN state to ordinary apps. The callback contains no carrier response text, so Bingwa cannot display a carrier error for this failure unless Android actually supplies one. Close any other USSD session and check that FDN is disabled for the Safaricom SIM."
     TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL ->
         "USSD_ERROR_SERVICE_UNAVAIL (-2): Android telephony USSD service was unavailable; Android supplied no carrier response text."
     -3 ->

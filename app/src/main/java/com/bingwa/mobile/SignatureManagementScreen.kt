@@ -445,7 +445,7 @@ private fun SignatureTerminalHeader(
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(SignatureStudioColors.border))
         Text(
-            "▸ *180*2*5*0712345678# ▸ SILENT VERIFY ▸ MATCH name · aliases · data · duration · choice ▸ PRICE IGNORED ▸ EXECUTE ▸ ".repeat(3),
+            "▸ *180*5*2*0712345678# ▸ SILENT VERIFY ▸ MATCH name · aliases · data · duration · choice ▸ PRICE IGNORED ▸ EXECUTE ▸ ".repeat(3),
             Modifier.fillMaxWidth().background(SignatureStudioColors.ink).padding(vertical = 5.dp).basicMarquee(iterations = Int.MAX_VALUE, velocity = 40.dp),
             color = SignatureStudioColors.amber, fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1, softWrap = false
         )
@@ -659,7 +659,7 @@ private fun SignatureLiveMenuPanel(
     var showCustomCodeDialog by remember { mutableStateOf(false) }
     var customCodeDraft by remember {
         mutableStateOf(
-            SignatureStudioStore.liveMenuCode(context).ifBlank { "*180*2*5*pn#" }
+            SignatureStudioStore.liveMenuCode(context).ifBlank { "*180*5*2*pn#" }
         )
     }
     val issueKey = if (state.hasDiagnosticIssue) {
@@ -682,7 +682,7 @@ private fun SignatureLiveMenuPanel(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Enter a verification template with pn (or 0712345678), e.g. *180*2*5*pn#. Live Menu dials it silently via TelephonyManager.sendUssdRequest().",
+                        "Enter a verification template with pn (or 0712345678), e.g. *180*5*2*pn#. Live Menu dials it silently via TelephonyManager.sendUssdRequest().",
                         color = SignatureStudioColors.t2,
                         fontSize = 12.sp,
                         lineHeight = 17.sp
@@ -692,7 +692,7 @@ private fun SignatureLiveMenuPanel(
                         onValueChange = { customCodeDraft = it },
                         singleLine = true,
                         label = { Text("USSD template") },
-                        placeholder = { Text("*180*2*5*pn#") }
+                        placeholder = { Text("*180*5*2*pn#") }
                     )
                 }
             },
