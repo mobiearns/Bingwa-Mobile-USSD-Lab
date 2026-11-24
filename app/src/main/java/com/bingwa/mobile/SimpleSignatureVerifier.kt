@@ -95,14 +95,21 @@ internal object SimpleSignatureVerifier {
      */
     fun menuOptions(response: String): List<Pair<Int, String>> {
         if (response.isBlank() || isCarrierRetryLimitResponse(response)) return emptyList()
-        val lineOptions = response.lineSequence()
+        // Native callbacks usually contain real line breaks, but some carrier
+        // bridges expose the escaped two-character sequence "\\n". Normalize
+        // both forms before parsing so numbered options are not merged.
+        val normalizedResponse = response
+            .replace("\\r", " ")
+            .replace("\\n", "\n")
+            .replace('\r', ' ')
+        val lineOptions = normalizedResponse.lineSequence()
             .mapNotNull(::parseOptionLine)
             .distinctBy { it.first }
             .toList()
         if (lineOptions.size > 1) return lineOptions
 
         val markers = Regex("""(?<![\d.])([1-9])\s*[.)]\s+""")
-            .findAll(response.replace('\r', ' '))
+            .findAll(normalizedResponse)
             .toList()
         if (markers.size < 2) return lineOptions
 
