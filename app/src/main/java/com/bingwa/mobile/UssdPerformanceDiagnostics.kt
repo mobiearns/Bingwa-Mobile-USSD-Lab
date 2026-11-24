@@ -38,6 +38,7 @@ internal object UssdPerformanceDiagnostics {
     @Volatile private var silentPreDispatchSnapshot: String = "not captured"
     @Volatile private var silentAcceptedSnapshot: String = "not captured"
     @Volatile private var silentCallbackSnapshot: String = "not captured"
+    @Volatile private var silentPendingMmiHypothesis: String = "not inferred"
 
     // Tracks only Bingwa requests in this process. Android does not expose the
     // system-wide pending MMI session through the public Telephony API.
@@ -120,6 +121,18 @@ internal object UssdPerformanceDiagnostics {
     fun recordSilentApiEvidence(detail: String) {
         silentUssdApiEvidence = detail.replace(Regex("[\\r\\n]+"), " ").take(500)
     }
+
+    /**
+     * Records the pending-MMI/USSD hypothesis marker. Flagged as "inferred, not measured"
+     * because the public Android API cannot observe system-wide mPendingMMIs state.
+     * Engineers can correlate this with ADB radio-log capture on the device.
+     */
+    fun recordSilentPendingMmiHypothesis(inferred: Boolean, detail: String) {
+        silentPendingMmiHypothesis = if (inferred) "INFERRED_NOT_MEASURED: $detail" else "not inferred"
+        record("silent.pending_mmi_hypothesis", detail = "inferred=$inferred detail=$detail")
+    }
+
+    fun silentPendingMmiHypothesisState(): String = silentPendingMmiHypothesis
 
     fun recordSilentFirstResponse(
         response: String,

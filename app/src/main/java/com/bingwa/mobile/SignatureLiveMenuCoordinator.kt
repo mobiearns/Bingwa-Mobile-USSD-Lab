@@ -412,6 +412,31 @@ internal object SignatureLiveMenuCoordinator {
                 return false
             }
 
+            if (SilentUssdOptimized.isNativeRequestUnresolved()) {
+                val blockedMessage = "Native USSD session unresolved — Android still owns the previous request. Wait for it to complete or restart the phone before refreshing."
+                val blockedState = reduceLiveMenuBlocked(
+                    previous = current,
+                    reason = blockedMessage,
+                    simDescription = simDescription,
+                    telephonyReadiness = telephonyReadiness,
+                    carrierConfig = carrierConfig
+                ).copy(sourceSummary = sourceSummary)
+                _state.value = blockedState
+                UssdPerformanceDiagnostics.recordSilentSignatureMenuBlocked(
+                    reason = blockedMessage,
+                    simDescription = simDescription,
+                    carrierConfig = carrierConfig,
+                    telephonyReadiness = telephonyReadiness,
+                    previousMenuRetained = blockedState.previousMenuRetained,
+                    sourceSummary = sourceSummary
+                )
+                UssdPerformanceDiagnostics.recordSilentPendingMmiHypothesis(
+                    inferred = true,
+                    detail = "Live Menu blocked: nativeRequestUnresolved=true consecutiveFailureLikely=true"
+                )
+                return false
+            }
+
             if (preview.isNullOrBlank()) {
                 val reason = "No offer with a saved PN verification code is available. Select an eligible offer in Offers to inspect its live menu."
                 val failedState = reduceLiveMenuFailure(

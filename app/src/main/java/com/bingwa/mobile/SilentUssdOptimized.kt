@@ -39,6 +39,7 @@ object SilentUssdOptimized {
     @Volatile private var timeoutNotifiedRequestId: Long = 0L
     @Volatile private var observedTelephonyManager: TelephonyManager? = null
     @Volatile private var radioStateListener: PhoneStateListener? = null
+    @Volatile private var lastFailureCategory: String? = null
 
     fun execute(
         context: Context,
@@ -179,6 +180,16 @@ object SilentUssdOptimized {
     /** True after the app wait expired while Android still owns the native request. */
     fun isNativeRequestUnresolved(): Boolean =
         isProcessing.get() && activeRequestId != 0L && timeoutNotifiedRequestId == activeRequestId
+
+    /**
+     * Returns the last failure category delivered to a caller, or null if no failure has
+     * been delivered yet. Categories: "ANDROID_GENERIC_FAILURE_CALLBACK" (USSD_RETURN_FAILURE -1),
+     * "ANDROID_TELEPHONY_SERVICE_UNAVAILABLE" (-2), "OTHER_FRAMEWORK_FAILURE", or a
+     * descriptive app-side reason (timeout, already in progress, not canonical, etc.).
+     * Callers can use this to surface honest "native USSD session may still be pending"
+     * guidance for -1 instead of a generic carrier error.
+     */
+    fun lastFailureCategory(): String? = lastFailureCategory
 
     @SuppressLint("MissingPermission")
     private fun tryPublicApi(
@@ -468,6 +479,17 @@ object SilentUssdOptimized {
         val outcome = when {
             reason.contains("timeout", ignoreCase = true) -> "APP_TIMEOUT_NO_CALLBACK"
             else -> "APP_FAILURE"
+        }
+        lastFailureCategory = when (failureCode) {
+            TelephonyManager.USSD_RETURN_FAILURE -> "ANDROID_GENERIC_FAILURE_CALLBACK"
+            TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "ANDROID_TELEPHONY_SERVICE_UNAVAILABLE"
+            null -> when {
+                reason.contains("timeout", ignoreCase = true) -> "APP_TIMEOUT_NO_CALLBACK"
+                reason.contains("already in progress", ignoreCase = true) -> "APP_ALREADY_IN_PROGRESS"
+                reason.contains("not canonical", ignoreCase = true) -> "APP_CODE_NOT_CANONICAL"
+                else -> "APP_FAILURE"
+            }
+            else -> "OTHER_FRAMEWORK_FAILURE"
         }
         UssdPerformanceDiagnostics.recordNativeRequestFinished(requestId, outcome, failureCode)
         val cb = synchronized(this) {

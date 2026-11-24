@@ -287,6 +287,18 @@ class AutomationService : Service() {
         }
 
         val subIdOverride = request.simSelection.takeUnless { it == OFFER_SIM_USE_GENERAL }
+
+        if (SilentUssdOptimized.isNativeRequestUnresolved()) {
+            recordSignatureActivity(this, offer.name + ": Simple signature unavailable (native USSD session unresolved)")
+            processResponse(
+                request,
+                "Signature not available: native USSD session unresolved — Android still owns the previous request.",
+                forcedStatus = TransactionStatus.FAILED.value
+            )
+            stopSelf()
+            return
+        }
+
         val preflightDelivered = AtomicBoolean(false)
         val started = UssdHelper.dialUssd(
             context = this,
