@@ -73,9 +73,9 @@ internal fun selectLiveMenuSourceOffer(
 }
 
 internal fun redactPreviewPattern(previewCode: String): String {
-    val trimmed = previewCode.trim()
-    if (trimmed.isBlank()) return "none"
-    return trimmed.replace(Regex("07\\d{8}"), "[pn]")
+    // Diagnostic/UI summaries must never expose the dial string itself. Keep
+    // only the fact that a saved verification template is available.
+    return if (previewCode.isBlank()) "none" else "saved verification template"
 }
 
 internal fun reduceLiveMenuStart(

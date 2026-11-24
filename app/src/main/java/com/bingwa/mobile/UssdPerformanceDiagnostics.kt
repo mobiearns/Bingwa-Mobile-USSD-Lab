@@ -205,7 +205,6 @@ internal object UssdPerformanceDiagnostics {
         isCarrierRetryLimit: Boolean = SimpleSignatureVerifier.isCarrierRetryLimitResponse(response),
         previousMenuRetained: Boolean = false
     ) {
-        val safeResponse = response.take(6000)
         val outcome = when {
             isCarrierRetryLimit -> "CALLBACK SUCCESS · CARRIER RETRY LIMIT"
             optionCount > 0 -> "CALLBACK SUCCESS · VALID MENU"
@@ -234,9 +233,8 @@ internal object UssdPerformanceDiagnostics {
             appendLine("Telephony state before request: $silentPreDispatchSnapshot")
             appendLine("Telephony state after API acceptance: $silentAcceptedSnapshot")
             appendLine("Telephony state at callback: $silentCallbackSnapshot")
-            appendLine("Raw carrier response:")
-            appendLine(if (safeResponse.isBlank()) "[Android returned an empty response]" else safeResponse)
-            if (response.length > safeResponse.length) appendLine("[Response truncated in copy report at 6000 chars]")
+            appendLine("Carrier response contents: REDACTED — diagnostic exports never include carrier text.")
+            appendLine("Carrier response metadata: chars=${response.length}; parsedOptions=$optionCount; classification=$outcome")
         }
     }
 
@@ -551,7 +549,7 @@ internal object UssdPerformanceDiagnostics {
             appendLine()
             appendLine("SILENT USSD API EVIDENCE")
             appendLine(silentUssdApiEvidence)
-            appendLine("Privacy: request contents and subscription identifiers are not included in diagnostic metadata. Successful raw carrier response remains available in the response section below.")
+            appendLine("Privacy: request contents, subscription identifiers, phone numbers, and raw carrier response text are excluded from diagnostic exports.")
             appendLine()
             appendLine("ADAPTIVE SEND LEARNING")
             appendLine(UssdAdaptiveSendMemory(context).buildReportSummary())

@@ -47,12 +47,17 @@ object SilentUssdOptimized {
         onFailure: (String) -> Unit,
         preserveRawResponse: Boolean = false
     ): Boolean {
-        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-            ?: run {
-                onFailure("TelephonyManager service is unavailable")
-                return false
-            }
-        return execute(tm, ussdCode, onSuccess, onFailure, preserveRawResponse)
+        // Resolve the selected/default voice SIM through the same strict routing path
+        // used by UssdHelper. A context base TelephonyManager is not guaranteed to
+        // represent the user selected subscription on dual-SIM devices.
+        return UssdHelper.dialUssd(
+            context = context.applicationContext,
+            ussdCode = ussdCode,
+            silentOnly = true,
+            onSuccess = onSuccess,
+            onFailure = onFailure,
+            preserveRawResponse = preserveRawResponse
+        )
     }
 
     fun execute(
@@ -81,6 +86,13 @@ object SilentUssdOptimized {
             return false
         }
 
+        // Recheck the other USSD engine at the native boundary as well as in
+        // UssdHelper. This narrows the race where Accessibility starts after
+        // the helper initial preflight check.
+        if (UssdNavigationService.isBusyForBalanceCheck()) {
+            onFailure("Accessibility-based USSD execution is already active")
+            return false
+        }
         if (!isProcessing.compareAndSet(false, true)) {
             onFailure("USSD execution already in progress")
             return false
@@ -273,38 +285,65 @@ object SilentUssdOptimized {
      */
     @SuppressLint("MissingPermission")
     private fun startRadioObservation(tm: TelephonyManager, requestId: Long) {
-        stopRadioObservation()
-        val listener = object : PhoneStateListener() {
-            override fun onServiceStateChanged(serviceState: ServiceState) {
+        // PhoneStateListener binds its callback Handler to the Looper of the
+        // thread on which it is constructed. Always construct/register it on
+        // the main Looper so worker-thread callers cannot create a listener
+        // without a Looper.
+        handler.post {
+            if (activeRequestId != requestId || !isProcessing.get()) return@post
+
+            stopRadioObservation()
+            val listener = object : PhoneStateListener() {
+                override fun onServiceStateChanged(serviceState: ServiceState) {
+                    UssdPerformanceDiagnostics.record(
+                        "silent.radio_service_state",
+                        detail = "requestId=$requestId state=${serviceState.state} roaming=${serviceState.roaming} voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
+                    )
+                }
+
+                override fun onDataConnectionStateChanged(state: Int, networkType: Int) {
+                    UssdPerformanceDiagnostics.record(
+                        "silent.radio_data_state",
+                        detail = "requestId=$requestId dataState=$state dataNetworkType=$networkType voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
+                    )
+                }
+
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    UssdPerformanceDiagnostics.record(
+                        "silent.radio_call_state",
+                        detail = "requestId=$requestId callState=$state"
+                    )
+                }
+            }
+
+            try {
+                tm.listen(
+                    listener,
+                    PhoneStateListener.LISTEN_SERVICE_STATE or
+                        PhoneStateListener.LISTEN_DATA_CONNECTION_STATE or
+                        PhoneStateListener.LISTEN_CALL_STATE
+                )
+                if (activeRequestId == requestId && isProcessing.get()) {
+                    observedTelephonyManager = tm
+                    radioStateListener = listener
+                    UssdPerformanceDiagnostics.record(
+                        "silent.radio_observer",
+                        detail = "requestId=$requestId registered=true events=service,data,call looper=main"
+                    )
+                } else {
+                    tm.listen(listener, PhoneStateListener.LISTEN_NONE)
+                }
+            } catch (security: SecurityException) {
                 UssdPerformanceDiagnostics.record(
-                    "silent.radio_service_state",
-                    detail = "requestId=$requestId state=${serviceState.state} roaming=${serviceState.roaming} voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
+                    "silent.radio_observer",
+                    detail = "requestId=$requestId registered=false reason=READ_PHONE_STATE_or_vendor_restriction"
+                )
+            } catch (error: Exception) {
+                UssdPerformanceDiagnostics.record(
+                    "silent.radio_observer",
+                    detail = "requestId=$requestId registered=false reason=${error.javaClass.simpleName}"
                 )
             }
-            override fun onDataConnectionStateChanged(state: Int, networkType: Int) {
-                UssdPerformanceDiagnostics.record(
-                    "silent.radio_data_state",
-                    detail = "requestId=$requestId dataState=$state dataNetworkType=$networkType voiceNetworkType=${runCatching { tm.voiceNetworkType }.getOrNull() ?: "unavailable"}"
-                )
-            }
-            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                UssdPerformanceDiagnostics.record("silent.radio_call_state", detail = "requestId=$requestId callState=$state")
-            }
-        }
-        try {
-            tm.listen(
-                listener,
-                PhoneStateListener.LISTEN_SERVICE_STATE or
-                    PhoneStateListener.LISTEN_DATA_CONNECTION_STATE or
-                    PhoneStateListener.LISTEN_CALL_STATE
-            )
-            observedTelephonyManager = tm
-            radioStateListener = listener
-            UssdPerformanceDiagnostics.record("silent.radio_observer", detail = "requestId=$requestId registered=true events=service,data,call")
-        } catch (security: SecurityException) {
-            UssdPerformanceDiagnostics.record("silent.radio_observer", detail = "requestId=$requestId registered=false reason=READ_PHONE_STATE_or_vendor_restriction")
-        } catch (error: Exception) {
-            UssdPerformanceDiagnostics.record("silent.radio_observer", detail = "requestId=$requestId registered=false reason=${error.javaClass.simpleName}")
         }
     }
 
@@ -486,8 +525,13 @@ object SilentUssdOptimized {
             timeoutNotifiedRequestId = requestId
             val current = failureCb
             failureCb = null
+            // The caller has already been notified of timeout. Do not retain its
+            // success closure (which can capture an Activity/Coordinator/Context)
+            // for an unbounded native-session wait.
+            successCb = null
             current
         }
+        stopRadioObservation()
         UssdPerformanceDiagnostics.recordNativeRequestTimedOut(requestId)
         UssdPerformanceDiagnostics.record(
             "silent.timeout_unresolved",
