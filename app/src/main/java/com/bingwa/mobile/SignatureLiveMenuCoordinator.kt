@@ -663,7 +663,12 @@ internal object SignatureLiveMenuCoordinator {
                     )
                 },
                 onFailure = { variantError ->
+                    // Only the first failure callback advances the chain. Later
+                    // duplicate callbacks are dropped to prevent an uncontrolled
+                    // retry storm when UNISOC rejects every variant immediately.
+                    if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
                     val isGenericFailure = variantError.contains("USSD_RETURN_FAILURE", ignoreCase = true)
+                    synchronized(lock) { requestInFlight = false }
                     if (isGenericFailure && variantIndex + 1 < ussdFallbackVariants.size) {
                         // Chain to the next variant
                         tryFallbackVariant(variantIndex + 1)
@@ -681,11 +686,15 @@ internal object SignatureLiveMenuCoordinator {
                 }
             )
             if (!variantStarted) {
-                // Variant could not start — try next variant
-                if (variantIndex + 1 < ussdFallbackVariants.size) {
-                    tryFallbackVariant(variantIndex + 1)
-                } else {
-                    tryFallbackVariant(ussdFallbackVariants.size)
+                // Variant could not start — try next variant.
+                // Guard with callbackHandled so a storm of non-starting variants
+                // cannot chain through all 10 in microseconds.
+                if (callbackHandled.compareAndSet(false, true)) {
+                    if (variantIndex + 1 < ussdFallbackVariants.size) {
+                        tryFallbackVariant(variantIndex + 1)
+                    } else {
+                        tryFallbackVariant(ussdFallbackVariants.size)
+                    }
                 }
             }
         }
