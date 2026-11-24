@@ -85,12 +85,45 @@ internal object SimpleSignatureVerifier {
         return code.takeIf { Regex("""^\*\d+(?:\*\d+)*#$""").matches(it) }
     }
 
+    /**
+     * Reads the first carrier menu from the raw native USSD callback.
+     *
+     * Some Android/carrier combinations return one flattened line rather than
+     * separate lines. Prefer the normal line parser, then split a flattened
+     * response at explicit numbered menu markers. This is read-only parsing:
+     * it never submits a menu choice or starts another USSD request.
+     */
     fun menuOptions(response: String): List<Pair<Int, String>> {
         if (response.isBlank() || isCarrierRetryLimitResponse(response)) return emptyList()
-        return response.lineSequence().mapNotNull { rawLine ->
-            parseOptionLine(rawLine)
-        }.distinctBy { it.first }.toList()
+        val lineOptions = response.lineSequence()
+            .mapNotNull(::parseOptionLine)
+            .distinctBy { it.first }
+            .toList()
+        if (lineOptions.size > 1) return lineOptions
+
+        val markers = Regex("""(?<![\\d.])([1-7])\\s*[.)]\\s+""")
+            .findAll(response.replace('\\r', ' '))
+            .toList()
+        if (markers.size < 2) return lineOptions
+
+        val flattened = markers.mapIndexedNotNull { index, marker ->
+            val start = marker.range.last + 1
+            val end = markers.getOrNull(index + 1)?.range?.first ?: response.length
+            val label = response.substring(start, end)
+                .replace('\\n', ' ')
+                .replace(Regex("""\\s+"""), " ")
+                .trim()
+                .trimEnd(';', '|')
+            val number = marker.groupValues[1].toIntOrNull() ?: return@mapIndexedNotNull null
+            if (label.isBlank() || !label.any(Char::isLetter)) null else number to label
+        }.distinctBy { it.first }
+
+        return if (flattened.size > lineOptions.size) flattened else lineOptions
     }
+
+    /** First-screen choices only. Position 8 and later belong to another screen. */
+    fun firstScreenMenuOptions(response: String): List<Pair<Int, String>> =
+        menuOptions(response).filter { it.first in 1..7 }
 
     private fun parseOptionLine(rawLine: String): Pair<Int, String>? {
         val line = rawLine.trim()
@@ -161,7 +194,7 @@ internal object SimpleSignatureVerifier {
                 position
             )
         }
-        val options = menuOptions(response).toMap()
+        val options = firstScreenMenuOptions(response).toMap()
         if (options.isEmpty()) {
             return Result(Status.UNAVAILABLE, "Signature not available: first-screen response has no readable numbered options.", preview, position)
         }

@@ -100,6 +100,26 @@ class SimpleSignatureVerifierTest {
         )
     }
 
+    @Test fun readsFlattenedFirstScreenMenuWithoutSendingAnySelection() {
+        val raw = "Welcome 1. 1GB Daily @ Ksh 20 2. 250MB valid for 24 hours 3. Airtime"
+        assertEquals(
+            listOf(
+                1 to "1GB Daily @ Ksh 20",
+                2 to "250MB valid for 24 hours",
+                3 to "Airtime"
+            ),
+            SimpleSignatureVerifier.firstScreenMenuOptions(raw)
+        )
+    }
+
+    @Test fun firstScreenReaderExcludesNextScreenPositions() {
+        val raw = "1. 1GB Daily\\n2. 250MB 24hrs\\n7. Weekly\\n8. More bundles"
+        assertEquals(
+            listOf(1 to "1GB Daily", 2 to "250MB 24hrs", 7 to "Weekly"),
+            SimpleSignatureVerifier.firstScreenMenuOptions(raw)
+        )
+    }
+
     @Test fun carrierRetryLimitResponseReturnsZeroMenuOptionsAndUnavailableStatus() {
         val raw = "Max Number of Menu Retries is Reached"
         assertEquals(true, SimpleSignatureVerifier.isCarrierRetryLimitResponse(raw))

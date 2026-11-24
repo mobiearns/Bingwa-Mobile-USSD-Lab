@@ -528,7 +528,7 @@ internal object SignatureLiveMenuCoordinator {
                     val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
                     val completedWall = System.currentTimeMillis()
                     val parseStartedAt = UssdPerformanceDiagnostics.mark()
-                    val options = SimpleSignatureVerifier.menuOptions(response)
+                    val options = SimpleSignatureVerifier.firstScreenMenuOptions(response)
                     UssdPerformanceDiagnostics.record(
                         "silent.response_parse",
                         parseStartedAt,
