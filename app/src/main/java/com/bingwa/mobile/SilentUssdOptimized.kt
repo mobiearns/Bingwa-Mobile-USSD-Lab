@@ -40,6 +40,14 @@ object SilentUssdOptimized {
     @Volatile private var observedTelephonyManager: TelephonyManager? = null
     @Volatile private var radioStateListener: PhoneStateListener? = null
     @Volatile private var lastFailureCategory: String? = null
+    /**
+     * True when the last native USSD failure was USSD_RETURN_FAILURE (-1) and the
+     * Android-side MMI/USSD session may still be pending on the telephony service.
+     * Set on every -1 callback; cleared on any success callback. Survives the
+     * callback that resets isProcessing/activeRequestId, so callers can detect
+     * a stranded session even after the app-level lock has been released.
+     */
+    @Volatile private var nativeSessionMayBePending: Boolean = false
 
     fun execute(
         context: Context,
@@ -190,6 +198,14 @@ object SilentUssdOptimized {
      * guidance for -1 instead of a generic carrier error.
      */
     fun lastFailureCategory(): String? = lastFailureCategory
+
+    /**
+     * True when the last native USSD failure was USSD_RETURN_FAILURE (-1) and the
+     * Android-side MMI/USSD session may still be pending. Cleared on any success
+     * callback. Callers (Live Menu, Simple Signature) should block new silent
+     * USSD requests when this is true instead of inviting another -1.
+     */
+    fun nativeSessionMayBePending(): Boolean = nativeSessionMayBePending
 
     @SuppressLint("MissingPermission")
     private fun tryPublicApi(
@@ -466,6 +482,7 @@ object SilentUssdOptimized {
             failureCb = null
             activeRequestId = 0L
             isProcessing.set(false)
+            nativeSessionMayBePending = false
             c
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -490,6 +507,15 @@ object SilentUssdOptimized {
                 else -> "APP_FAILURE"
             }
             else -> "OTHER_FRAMEWORK_FAILURE"
+        }
+        // A -1 generic failure may leave the Android-side MMI/USSD session pending
+        // (especially on UNISOC/Infinix builds that diverge from AOSP clearing behavior).
+        // Persist this flag beyond the callback so callers can detect a stranded
+        // session even after isProcessing/activeRequestId have been reset.
+        if (failureCode == TelephonyManager.USSD_RETURN_FAILURE) {
+            nativeSessionMayBePending = true
+        } else {
+            nativeSessionMayBePending = false
         }
         UssdPerformanceDiagnostics.recordNativeRequestFinished(requestId, outcome, failureCode)
         val cb = synchronized(this) {

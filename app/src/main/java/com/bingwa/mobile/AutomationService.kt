@@ -288,11 +288,12 @@ class AutomationService : Service() {
 
         val subIdOverride = request.simSelection.takeUnless { it == OFFER_SIM_USE_GENERAL }
 
-        if (SilentUssdOptimized.isNativeRequestUnresolved()) {
-            recordSignatureActivity(this, offer.name + ": Simple signature unavailable (native USSD session unresolved)")
+        if (SilentUssdOptimized.isNativeRequestUnresolved() ||
+            SilentUssdOptimized.nativeSessionMayBePending()) {
+            recordSignatureActivity(this, offer.name + ": Simple signature unavailable (native USSD session unresolved or pending)")
             processResponse(
                 request,
-                "Signature not available: native USSD session unresolved — Android still owns the previous request.",
+                "Signature not available: native USSD session may still be pending on Android — restart the phone or toggle airplane mode before retrying.",
                 forcedStatus = TransactionStatus.FAILED.value
             )
             stopSelf()

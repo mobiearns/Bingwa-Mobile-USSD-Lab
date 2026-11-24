@@ -412,8 +412,13 @@ internal object SignatureLiveMenuCoordinator {
                 return false
             }
 
-            if (SilentUssdOptimized.isNativeRequestUnresolved()) {
-                val blockedMessage = "Native USSD session unresolved — Android still owns the previous request. Wait for it to complete or restart the phone before refreshing."
+            if (SilentUssdOptimized.isNativeRequestUnresolved() ||
+                SilentUssdOptimized.nativeSessionMayBePending()) {
+                val blockedMessage = if (SilentUssdOptimized.nativeSessionMayBePending()) {
+                    "Native USSD session may still be pending on Android — restart the phone or toggle airplane mode before refreshing."
+                } else {
+                    "Native USSD session unresolved — Android still owns the previous request. Wait for it to complete or restart the phone before refreshing."
+                }
                 val blockedState = reduceLiveMenuBlocked(
                     previous = current,
                     reason = blockedMessage,
@@ -432,7 +437,7 @@ internal object SignatureLiveMenuCoordinator {
                 )
                 UssdPerformanceDiagnostics.recordSilentPendingMmiHypothesis(
                     inferred = true,
-                    detail = "Live Menu blocked: nativeRequestUnresolved=true consecutiveFailureLikely=true"
+                    detail = "Live Menu blocked: nativeRequestUnresolved=${SilentUssdOptimized.isNativeRequestUnresolved()} nativeSessionMayBePending=${SilentUssdOptimized.nativeSessionMayBePending()}"
                 )
                 return false
             }
