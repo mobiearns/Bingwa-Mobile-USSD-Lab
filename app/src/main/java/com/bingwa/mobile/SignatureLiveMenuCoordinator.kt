@@ -496,7 +496,6 @@ internal object SignatureLiveMenuCoordinator {
         val requestStartedElapsed = SystemClock.elapsedRealtime()
         val callbackHandled = AtomicBoolean(false)
         val dialCallInProgress = AtomicBoolean(true)
-        val fallbackAttempted = AtomicBoolean(false)
 
         val started = try {
             UssdHelper.dialUssd(
@@ -537,114 +536,11 @@ internal object SignatureLiveMenuCoordinator {
                     )
                 },
                 onFailure = { error ->
-                    val wasBusy = error.contains("already in progress", ignoreCase = true)
-                    val shouldTryFallback = !wasBusy &&
-                        !fallbackAttempted.getAndSet(true) &&
-                        SilentUssdOptimized.nativeSessionMayBePending() &&
-                        error.contains("USSD_RETURN_FAILURE", ignoreCase = true)
-
-                    if (shouldTryFallback) {
-                        // Fallback to *180# so Live Menu can still capture a menu when the
-                        // verification code (*180*5*2*pn#) is blocked by a stranded native session.
-                        // Do not set callbackHandled yet — wait for the fallback result.
-                        val fallbackStarted = UssdHelper.dialUssd(
-                            context = appContext,
-                            ussdCode = "*180#",
-                            silentOnly = true,
-                            subIdOverride = selectedSim,
-                            preserveRawResponse = true,
-                            onSuccess = { fallbackResponse ->
-                                if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
-                                val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
-                                val completedWall = System.currentTimeMillis()
-                                val parseStartedAt = UssdPerformanceDiagnostics.mark()
-                                val options = SimpleSignatureVerifier.menuOptions(fallbackResponse)
-                                UssdPerformanceDiagnostics.record(
-                                    "silent.response_parse",
-                                    parseStartedAt,
-                                    "responseChars=${fallbackResponse.length} parsedOptions=${options.size} classification=${if (options.isNotEmpty()) "menu" else "non_menu_response"} fallback=true"
-                                )
-                                val updated = synchronized(lock) {
-                                    requestInFlight = false
-                                    val next = reduceLiveMenuSuccess(
-                                        previous = _state.value,
-                                        rawResponse = fallbackResponse,
-                                        parsedOptions = options,
-                                        elapsedMs = elapsed,
-                                        completedAtWallMs = completedWall
-                                    )
-                                    _state.value = next
-                                    next
-                                }
-                                UssdPerformanceDiagnostics.recordSilentSignatureMenuSuccess(
-                                    response = fallbackResponse,
-                                    optionCount = options.size,
-                                    elapsedMs = elapsed,
-                                    isCarrierRetryLimit = updated.isCarrierRetryLimit,
-                                    previousMenuRetained = updated.previousMenuRetained
-                                )
-                            },
-                            onFailure = { fallbackError ->
-                                if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
-                                val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
-                                val completedWall = System.currentTimeMillis()
-                                val updated = synchronized(lock) {
-                                    requestInFlight = false
-                                    val current = _state.value
-                                    val next = reduceLiveMenuBlocked(
-                                        previous = current,
-                                        reason = "Native USSD session may still be pending. Primary verification (*180*5*2*pn#) failed with USSD_RETURN_FAILURE (-1); fallback to *180# also failed: $fallbackError. Restart the phone or toggle airplane mode before refreshing.",
-                                        simDescription = simDescription,
-                                        telephonyReadiness = telephonyReadiness,
-                                        carrierConfig = carrierConfig
-                                    )
-                                    _state.value = next
-                                    next
-                                }
-                                UssdPerformanceDiagnostics.recordSilentSignatureMenuBlocked(
-                                    reason = next.lastAttemptError,
-                                    simDescription = simDescription,
-                                    carrierConfig = carrierConfig,
-                                    telephonyReadiness = telephonyReadiness,
-                                    previousMenuRetained = updated.previousMenuRetained,
-                                    sourceSummary = sourceSummary
-                                )
-                            }
-                        )
-                        if (!fallbackStarted) {
-                            // Fallback could not even start — fall through to normal failure handling.
-                            if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
-                            val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
-                            val completedWall = System.currentTimeMillis()
-                            val requestStarted = !dialCallInProgress.get()
-                            val updated = synchronized(lock) {
-                                requestInFlight = false
-                                val current = _state.value
-                                val next = reduceLiveMenuFailure(
-                                    previous = current,
-                                    error = error,
-                                    elapsedMs = elapsed,
-                                    requestStarted = requestStarted,
-                                    completedAtWallMs = completedWall
-                                )
-                                _state.value = next
-                                next
-                            }
-                            UssdPerformanceDiagnostics.recordSilentSignatureMenuFailure(
-                                error = error,
-                                elapsedMs = elapsed,
-                                requestStarted = requestStarted,
-                                previousMenuRetained = updated.previousMenuRetained
-                            )
-                        }
-                        return@dialUssd
-                    }
-
-                    // Normal failure handling (no fallback)
                     if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
                     val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
                     val completedWall = System.currentTimeMillis()
                     val requestStarted = !dialCallInProgress.get()
+                    val wasBusy = error.contains("already in progress", ignoreCase = true)
                     val updated = synchronized(lock) {
                         requestInFlight = false
                         val current = _state.value
