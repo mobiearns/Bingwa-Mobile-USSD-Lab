@@ -496,6 +496,7 @@ internal object SignatureLiveMenuCoordinator {
         val requestStartedElapsed = SystemClock.elapsedRealtime()
         val callbackHandled = AtomicBoolean(false)
         val dialCallInProgress = AtomicBoolean(true)
+        val fallbackAttempted = AtomicBoolean(false)
 
         val started = try {
             UssdHelper.dialUssd(
@@ -536,50 +537,111 @@ internal object SignatureLiveMenuCoordinator {
                     )
                 },
                 onFailure = { error ->
-                    if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
-                    val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
-                    val completedWall = System.currentTimeMillis()
-                    val requestStarted = !dialCallInProgress.get()
                     val wasBusy = error.contains("already in progress", ignoreCase = true)
-                    val updated = synchronized(lock) {
-                        requestInFlight = false
-                        val current = _state.value
-                        val next = if (wasBusy) {
-                            reduceLiveMenuBlocked(
-                                previous = current.copy(loading = false),
-                                reason = error,
+                    val shouldTryFallback = !wasBusy &&
+                        !fallbackAttempted.getAndSet(true) &&
+                        SilentUssdOptimized.nativeSessionMayBePending() &&
+                        error.contains("USSD_RETURN_FAILURE", ignoreCase = true)
+
+                    if (shouldTryFallback) {
+                        // Fallback to *180# so Live Menu can still capture a carrier menu
+                        // (with response chars) when the verification code
+                        // (*180*5*2*pn#) is blocked by a stranded native session.
+                        val fallbackStarted = UssdHelper.dialUssd(
+                            context = appContext,
+                            ussdCode = "*180#",
+                            silentOnly = true,
+                            subIdOverride = selectedSim,
+                            preserveRawResponse = true,
+                            onSuccess = { fallbackResponse ->
+                                if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
+                                val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
+                                val completedWall = System.currentTimeMillis()
+                                val parseStartedAt = UssdPerformanceDiagnostics.mark()
+                                val options = SimpleSignatureVerifier.menuOptions(fallbackResponse)
+                                UssdPerformanceDiagnostics.record(
+                                    "silent.response_parse",
+                                    parseStartedAt,
+                                    "responseChars=${fallbackResponse.length} parsedOptions=${options.size} classification=${if (options.isNotEmpty()) "menu" else "non_menu_response"} fallback=true"
+                                )
+                                val updated = synchronized(lock) {
+                                    requestInFlight = false
+                                    val next = reduceLiveMenuSuccess(
+                                        previous = _state.value,
+                                        rawResponse = fallbackResponse,
+                                        parsedOptions = options,
+                                        elapsedMs = elapsed,
+                                        completedAtWallMs = completedWall
+                                    )
+                                    _state.value = next
+                                    next
+                                }
+                                UssdPerformanceDiagnostics.recordSilentSignatureMenuSuccess(
+                                    response = fallbackResponse,
+                                    optionCount = options.size,
+                                    elapsedMs = elapsed,
+                                    isCarrierRetryLimit = updated.isCarrierRetryLimit,
+                                    previousMenuRetained = updated.previousMenuRetained
+                                )
+                            },
+                            onFailure = { fallbackError ->
+                                if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
+                                val elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L)
+                                val completedWall = System.currentTimeMillis()
+                                val updated = synchronized(lock) {
+                                    requestInFlight = false
+                                    val current = _state.value
+                                    val next = reduceLiveMenuBlocked(
+                                        previous = current,
+                                        reason = "Primary verification (*180*5*2*pn#) failed with USSD_RETURN_FAILURE (-1). Fallback to *180# also failed: $fallbackError. Restart the phone or toggle airplane mode before refreshing.",
+                                        simDescription = simDescription,
+                                        telephonyReadiness = telephonyReadiness,
+                                        carrierConfig = carrierConfig
+                                    )
+                                    _state.value = next
+                                    next
+                                }
+                                UssdPerformanceDiagnostics.recordSilentSignatureMenuBlocked(
+                                    reason = next.lastAttemptError,
+                                    simDescription = simDescription,
+                                    carrierConfig = carrierConfig,
+                                    telephonyReadiness = telephonyReadiness,
+                                    previousMenuRetained = updated.previousMenuRetained,
+                                    sourceSummary = sourceSummary
+                                )
+                            }
+                        )
+                        if (!fallbackStarted) {
+                            // Fallback could not even start — fall through to normal failure handling.
+                            handlePrimaryFailure(
+                                callbackHandled = callbackHandled,
+                                error = error,
+                                elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L),
+                                completedWall = System.currentTimeMillis(),
+                                requestStarted = !dialCallInProgress.get(),
+                                wasBusy = wasBusy,
                                 simDescription = simDescription,
                                 telephonyReadiness = telephonyReadiness,
-                                carrierConfig = carrierConfig
-                            )
-                        } else {
-                            reduceLiveMenuFailure(
-                                previous = current,
-                                error = error,
-                                elapsedMs = elapsed,
-                                requestStarted = requestStarted,
-                                completedAtWallMs = completedWall
+                                carrierConfig = carrierConfig,
+                                sourceSummary = sourceSummary
                             )
                         }
-                        _state.value = next
-                        next
+                        return@dialUssd
                     }
-                    if (wasBusy) {
-                        UssdPerformanceDiagnostics.recordSilentSignatureMenuBlocked(
-                            reason = error,
-                            simDescription = simDescription,
-                            carrierConfig = carrierConfig,
-                            telephonyReadiness = telephonyReadiness,
-                            previousMenuRetained = updated.previousMenuRetained
-                        )
-                    } else {
-                        UssdPerformanceDiagnostics.recordSilentSignatureMenuFailure(
-                            error = error,
-                            elapsedMs = elapsed,
-                            requestStarted = requestStarted,
-                            previousMenuRetained = updated.previousMenuRetained
-                        )
-                    }
+
+                    // Normal failure handling (no fallback)
+                    handlePrimaryFailure(
+                        callbackHandled = callbackHandled,
+                        error = error,
+                        elapsed = (SystemClock.elapsedRealtime() - requestStartedElapsed).coerceAtLeast(0L),
+                        completedWall = System.currentTimeMillis(),
+                        requestStarted = !dialCallInProgress.get(),
+                        wasBusy = wasBusy,
+                        simDescription = simDescription,
+                        telephonyReadiness = telephonyReadiness,
+                        carrierConfig = carrierConfig,
+                        sourceSummary = sourceSummary
+                    )
                 }
             )
         } finally {
@@ -611,5 +673,59 @@ internal object SignatureLiveMenuCoordinator {
             return false
         }
         return started
+    }
+
+    private fun handlePrimaryFailure(
+        callbackHandled: AtomicBoolean,
+        error: String,
+        elapsed: Long,
+        completedWall: Long,
+        requestStarted: Boolean,
+        wasBusy: Boolean,
+        simDescription: String,
+        telephonyReadiness: String,
+        carrierConfig: String,
+        sourceSummary: String
+    ) {
+        if (!callbackHandled.compareAndSet(false, true)) return
+        synchronized(lock) {
+            requestInFlight = false
+            val current = _state.value
+            val next = if (wasBusy) {
+                reduceLiveMenuBlocked(
+                    previous = current.copy(loading = false),
+                    reason = error,
+                    simDescription = simDescription,
+                    telephonyReadiness = telephonyReadiness,
+                    carrierConfig = carrierConfig
+                )
+            } else {
+                reduceLiveMenuFailure(
+                    previous = current,
+                    error = error,
+                    elapsedMs = elapsed,
+                    requestStarted = requestStarted,
+                    completedAtWallMs = completedWall
+                )
+            }
+            _state.value = next
+        }
+        if (wasBusy) {
+            UssdPerformanceDiagnostics.recordSilentSignatureMenuBlocked(
+                reason = error,
+                simDescription = simDescription,
+                carrierConfig = carrierConfig,
+                telephonyReadiness = telephonyReadiness,
+                previousMenuRetained = _state.value.previousMenuRetained,
+                sourceSummary = sourceSummary
+            )
+        } else {
+            UssdPerformanceDiagnostics.recordSilentSignatureMenuFailure(
+                error = error,
+                elapsedMs = elapsed,
+                requestStarted = requestStarted,
+                previousMenuRetained = _state.value.previousMenuRetained
+            )
+        }
     }
 }
