@@ -2,6 +2,8 @@ package com.bingwa.mobile
 
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -498,31 +500,48 @@ internal object SignatureLiveMenuCoordinator {
         val dialCallInProgress = AtomicBoolean(true)
 
         // 10 fallback variants for the long verification code *180*5*2*pn#.
-        // Each variant uses a unique spacing/formatting pattern when constructing
-        // the dial string. Spaces are stripped before crossing the silent-USD
-        // boundary (canonicalSilentUssdDialString rejects spaces), so the spacing
-        // documents the entry method while the actual transmitted string is canonical.
-        // First 5 variants use phone 0712345678, last 5 use 0790993046.
+        // No spacing is used: canonicalSilentUssdDialString rejects spaces with
+        // regex ^\\*[0-9]+(?:\\*[0-9]+)*#$, so spaced templates transmit the same
+        // canonical string as unspaced ones — spacing was a no-op. Instead, the
+        // 10 methods differ by phone number, phone-number format, and retry
+        // timing. First 5 variants use phone 0712345678, last 5 use 0790993046.
+        // pn is replaced with the actual phone number before transmission.
         data class UssdFallbackVariant(
             val label: String,
-            val spacedTemplate: String,   // contains "pn" placeholder
+            val code: String,   // canonical dial string, pn already replaced, no spaces
             val phoneNumber: String
         )
 
         val ussdFallbackVariants = listOf(
-            // Variants 1-5: phone 0712345678
-            UssdFallbackVariant("v1_canonical_no_spaces_0712345678", "*180*5*2*pn#", "0712345678"),
-            UssdFallbackVariant("v2_spaced_every_separator_0712345678", "* 180 * 5 * 2 * pn * #", "0712345678"),
-            UssdFallbackVariant("v3_irregular_spaces_0712345678", "*180 *5* 2 *0712345678 *#", "0712345678"),
-            UssdFallbackVariant("v4_alternate_spaces_0712345678", "*180* 5*2* 0712345678 *#", "0712345678"),
-            UssdFallbackVariant("v5_double_hash_0712345678", "*180*5*2*pn*#", "0712345678"),
-            // Variants 6-10: phone 0790993046
-            UssdFallbackVariant("v6_canonical_no_spaces_0790993046", "*180*5*2*pn#", "0790993046"),
-            UssdFallbackVariant("v7_spaced_every_separator_0790993046", "* 180 * 5 * 2 * pn * #", "0790993046"),
-            UssdFallbackVariant("v8_irregular_spaces_0790993046", "*180 *5* 2 *0790993046 *#", "0790993046"),
-            UssdFallbackVariant("v9_alternate_spaces_0790993046", "*180* 5*2* 0790993046 *#", "0790993046"),
-            UssdFallbackVariant("v10_double_hash_0790993046", "*180*5*2*pn*#", "0790993046"),
+            // Variants 1-5: phone 0712345678 — different formats and retry timing
+            UssdFallbackVariant("v1_immediate_0712345678", "*180*5*2*0712345678#", "0712345678"),
+            UssdFallbackVariant("v2_noLeadingZero_0712345678", "*180*5*2*712345678#", "0712345678"),
+            UssdFallbackVariant("v3_retryAfterDelay_0712345678", "*180*5*2*0712345678#", "0712345678"),
+            UssdFallbackVariant("v4_retryAfterLongerDelay_0712345678", "*180*5*2*0712345678#", "0712345678"),
+            UssdFallbackVariant("v5_retryAfterMaxDelay_0712345678", "*180*5*2*0712345678#", "0712345678"),
+            // Variants 6-10: phone 0790993046 — same method set, different number
+            UssdFallbackVariant("v6_immediate_0790993046", "*180*5*2*0790993046#", "0790993046"),
+            UssdFallbackVariant("v7_noLeadingZero_0790993046", "*180*5*2*790993046#", "0790993046"),
+            UssdFallbackVariant("v8_retryAfterDelay_0790993046", "*180*5*2*0790993046#", "0790993046"),
+            UssdFallbackVariant("v9_retryAfterLongerDelay_0790993046", "*180*5*2*0790993046#", "0790993046"),
+            UssdFallbackVariant("v10_retryAfterMaxDelay_0790993046", "*180*5*2*0790993046#", "0790993046"),
         )
+
+        private val fallbackHandler = Handler(Looper.getMainLooper())
+
+        /**
+         * Delay (ms) to wait before dispatching the fallback variant at the given
+         * index. Longer delays give UNISOC's telephony service time to clear any
+         * stranded pending MMI from the previous -1 before the next attempt.
+         */
+        private fun delayBeforeVariant(variantIndex: Int): Long = when (variantIndex) {
+            0, 5 -> 0L      // first attempt of each phone number: immediate
+            1, 6 -> 500L    // no-leading-zero variant: short delay
+            2, 7 -> 1000L   // first delayed retry: 1 second
+            3, 8 -> 2000L   // second delayed retry: 2 seconds
+            4, 9 -> 4000L   // third delayed retry: 4 seconds
+            else -> 0L
+        }
 
         /**
          * Try fallback variant at the given index. Chains to the next variant on
@@ -614,20 +633,21 @@ internal object SignatureLiveMenuCoordinator {
             }
 
             val variant = ussdFallbackVariants[variantIndex]
-            // Replace pn placeholder with the actual phone number, then strip spaces
-            // for the silent-USD boundary (canonicalSilentUssdDialString requires no spaces).
-            val variantCode = variant.spacedTemplate
-                .replace("pn", variant.phoneNumber, ignoreCase = true)
-                .replace(" ", "")
+            val dispatchDelay = delayBeforeVariant(variantIndex)
+
+            // Clear the USSD execution path before this variant: reset the
+            // pending-MMI flag and release any stale single-flight state so
+            // each attempt starts clean.
+            SilentUssdOptimized.resetNativeSessionPending()
 
             UssdPerformanceDiagnostics.record(
                 "silent.fallback_variant",
-                detail = "variant=${variant.label} codeChars=${variantCode.length} phoneNumberRedacted=true"
+                detail = "variant=${variant.label} codeChars=${variant.code.length} phoneNumberRedacted=true delayMs=$dispatchDelay"
             )
 
             val variantStarted = UssdHelper.dialUssd(
                 context = appContext,
-                ussdCode = variantCode,
+                ussdCode = variant.code,
                 silentOnly = true,
                 subIdOverride = selectedSim,
                 preserveRawResponse = true,
@@ -663,37 +683,38 @@ internal object SignatureLiveMenuCoordinator {
                     )
                 },
                 onFailure = { variantError ->
-                    // Only the first failure callback advances the chain. Later
-                    // duplicate callbacks are dropped to prevent an uncontrolled
-                    // retry storm when UNISOC rejects every variant immediately.
+                    // Only the first failure callback advances the chain.
                     if (!callbackHandled.compareAndSet(false, true)) return@dialUssd
-                    val isGenericFailure = variantError.contains("USSD_RETURN_FAILURE", ignoreCase = true)
                     synchronized(lock) { requestInFlight = false }
-                    if (isGenericFailure && variantIndex + 1 < ussdFallbackVariants.size) {
-                        // Chain to the next variant
-                        tryFallbackVariant(variantIndex + 1)
-                    } else if (isGenericFailure) {
-                        // Last variant failed — try final *180# fallback
-                        tryFallbackVariant(ussdFallbackVariants.size)
-                    } else {
-                        // Non-generic failure — try next variant anyway
-                        if (variantIndex + 1 < ussdFallbackVariants.size) {
+                    // Clear execution path before next attempt
+                    SilentUssdOptimized.resetNativeSessionPending()
+                    val isGenericFailure = variantError.contains("USSD_RETURN_FAILURE", ignoreCase = true)
+                    if (variantIndex + 1 < ussdFallbackVariants.size) {
+                        // Chain to the next variant after its configured delay
+                        fallbackHandler.postDelayed({
                             tryFallbackVariant(variantIndex + 1)
-                        } else {
+                        }, delayBeforeVariant(variantIndex + 1))
+                    } else {
+                        // Last variant failed — try final *180# fallback
+                        fallbackHandler.postDelayed({
                             tryFallbackVariant(ussdFallbackVariants.size)
-                        }
+                        }, delayBeforeVariant(ussdFallbackVariants.size))
                     }
                 }
             )
             if (!variantStarted) {
-                // Variant could not start — try next variant.
-                // Guard with callbackHandled so a storm of non-starting variants
-                // cannot chain through all 10 in microseconds.
+                // Variant could not start — clear path and try next
+                synchronized(lock) { requestInFlight = false }
+                SilentUssdOptimized.resetNativeSessionPending()
                 if (callbackHandled.compareAndSet(false, true)) {
                     if (variantIndex + 1 < ussdFallbackVariants.size) {
-                        tryFallbackVariant(variantIndex + 1)
+                        fallbackHandler.postDelayed({
+                            tryFallbackVariant(variantIndex + 1)
+                        }, delayBeforeVariant(variantIndex + 1))
                     } else {
-                        tryFallbackVariant(ussdFallbackVariants.size)
+                        fallbackHandler.postDelayed({
+                            tryFallbackVariant(ussdFallbackVariants.size)
+                        }, delayBeforeVariant(ussdFallbackVariants.size))
                     }
                 }
             }

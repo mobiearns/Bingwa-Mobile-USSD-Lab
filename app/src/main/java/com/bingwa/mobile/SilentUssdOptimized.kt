@@ -207,6 +207,22 @@ object SilentUssdOptimized {
      */
     fun nativeSessionMayBePending(): Boolean = nativeSessionMayBePending
 
+    /**
+     * Clears the app-side nativeSessionMayBePending flag and ensures the
+     * single-flight lock is released, so the next USSD execution attempt
+     * starts from a clean execution path. Does not cancel an in-flight
+     * Android native request — there is no public API for that. Call this
+     * before each fallback variant attempt so a stranded -1 state from a
+     * previous variant does not block the next one.
+     */
+    fun resetNativeSessionPending() {
+        nativeSessionMayBePending = false
+        if (!isProcessing.get()) {
+            activeRequestId = 0L
+            timeoutNotifiedRequestId = 0L
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun tryPublicApi(
         tm: TelephonyManager,
