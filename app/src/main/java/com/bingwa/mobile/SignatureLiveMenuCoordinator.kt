@@ -3,6 +3,9 @@ package com.bingwa.mobile
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import android.telephony.SubscriptionInfo
+import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -276,11 +279,190 @@ internal fun reduceLiveMenuBlocked(
     )
 }
 
+internal data class LiveMenuSimCandidate(
+    val slotSelection: Int,
+    val slotIndex: Int,
+    val subId: Int,
+    val simOperatorNumeric: String,
+    val carrierLabel: String,
+    val isDefaultVoice: Boolean
+)
+
+internal data class LiveMenuSimRoutingDecision(
+    val chosen: LiveMenuSimCandidate?,
+    val autoSwitchedFrom: LiveMenuSimCandidate? = null,
+    val simAdvice: String = "",
+    val recommendedSimSelection: Int? = null
+)
+
+internal fun isSafaricomOperator(
+    simOperatorNumeric: String,
+    carrierLabel: String
+): Boolean {
+    val numeric = simOperatorNumeric.trim()
+    if (numeric == "63902") return true
+    return carrierLabel.contains("safaricom", ignoreCase = true)
+}
+
+internal fun isConfirmedNonSafaricomOperator(
+    simOperatorNumeric: String,
+    carrierLabel: String
+): Boolean {
+    if (isSafaricomOperator(simOperatorNumeric, carrierLabel)) return false
+    val numeric = simOperatorNumeric.trim()
+    if (numeric.length >= 5 && numeric.all(Char::isDigit)) return true
+    val label = carrierLabel.trim()
+    return label.isNotBlank() &&
+        !label.equals("unknown", ignoreCase = true) &&
+        !label.equals("unknown carrier", ignoreCase = true) &&
+        !label.matches(Regex("^SIM\\s*\\d+$", RegexOption.IGNORE_CASE))
+}
+
+internal fun resolveLiveMenuSimRouting(
+    candidates: List<LiveMenuSimCandidate>,
+    requestedSelection: Int
+): LiveMenuSimRoutingDecision {
+    if (candidates.isEmpty()) {
+        return LiveMenuSimRoutingDecision(
+            chosen = null,
+            simAdvice = "No active SIM is currently resolved. Select an installed SIM slot and refresh."
+        )
+    }
+
+    val safaricomCandidates = candidates.filter {
+        isSafaricomOperator(it.simOperatorNumeric, it.carrierLabel)
+    }
+    val preferredSafaricom = safaricomCandidates.firstOrNull { it.isDefaultVoice }
+        ?: safaricomCandidates.firstOrNull()
+    val defaultVoiceCandidate = candidates.firstOrNull { it.isDefaultVoice }
+
+    val requestedCandidate = when (requestedSelection) {
+        USSD_SIM_SELECTION_SLOT_1 -> candidates.firstOrNull { it.slotIndex == 0 }
+        USSD_SIM_SELECTION_SLOT_2 -> candidates.firstOrNull { it.slotIndex == 1 }
+        OFFER_SIM_USE_GENERAL -> null
+        else -> candidates.firstOrNull { it.subId == requestedSelection }
+    }
+
+    val chosen: LiveMenuSimCandidate?
+    val autoSwitchedFrom: LiveMenuSimCandidate?
+    if (requestedSelection == OFFER_SIM_USE_GENERAL) {
+        chosen = preferredSafaricom ?: defaultVoiceCandidate ?: candidates.firstOrNull()
+        autoSwitchedFrom = null
+    } else if (
+        requestedCandidate != null &&
+        isConfirmedNonSafaricomOperator(requestedCandidate.simOperatorNumeric, requestedCandidate.carrierLabel) &&
+        preferredSafaricom != null
+    ) {
+        // *180*5*2*0790993046# is strictly a Safaricom Kenya USSD request.
+        // Never send it to a confirmed non-Safaricom SIM (e.g., Airtel KE 63903)
+        // when a Safaricom SIM is available on the device.
+        chosen = preferredSafaricom
+        autoSwitchedFrom = requestedCandidate
+    } else {
+        chosen = requestedCandidate ?: preferredSafaricom ?: candidates.firstOrNull()
+        autoSwitchedFrom = null
+    }
+
+    if (chosen == null) {
+        return LiveMenuSimRoutingDecision(
+            chosen = null,
+            simAdvice = "No active SIM is currently resolved. Select an installed SIM slot and refresh."
+        )
+    }
+
+    val safaricomDefaultVoice = safaricomCandidates.firstOrNull { it.isDefaultVoice }
+    val recommendedSimSelection = if (
+        safaricomDefaultVoice != null &&
+        chosen.subId != safaricomDefaultVoice.subId
+    ) {
+        safaricomDefaultVoice.slotSelection
+    } else {
+        null
+    }
+
+    val simAdvice = when {
+        autoSwitchedFrom != null -> {
+            val fromLabel = autoSwitchedFrom.carrierLabel.ifBlank { "non-Safaricom" }
+            val toLabel = chosen.carrierLabel.ifBlank { "Safaricom" }
+            "Switched Live Menu from SIM ${autoSwitchedFrom.slotIndex + 1} ($fromLabel) to SIM ${chosen.slotIndex + 1} ($toLabel) because *180*5*2*0790993046# is a Safaricom USSD service."
+        }
+        isConfirmedNonSafaricomOperator(chosen.simOperatorNumeric, chosen.carrierLabel) -> {
+            val operatorSuffix = chosen.simOperatorNumeric.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+            "SIM ${chosen.slotIndex + 1} is ${chosen.carrierLabel}$operatorSuffix, not Safaricom. Live Menu requires a Safaricom SIM for *180*5*2*0790993046#."
+        }
+        recommendedSimSelection != null -> {
+            val recommendedSlot = if (recommendedSimSelection == USSD_SIM_SELECTION_SLOT_2) "SIM 2" else "SIM 1"
+            "Both SIMs include Safaricom, and Android's default voice SIM is $recommendedSlot; try it if USSD routing fails."
+        }
+        else -> ""
+    }
+
+    return LiveMenuSimRoutingDecision(
+        chosen = chosen,
+        autoSwitchedFrom = autoSwitchedFrom,
+        simAdvice = simAdvice,
+        recommendedSimSelection = recommendedSimSelection
+    )
+}
+
+internal fun resolveLiveMenuSimCandidates(
+    context: Context,
+    sims: List<SubscriptionInfo>
+): List<LiveMenuSimCandidate> {
+    val baseTm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+    val defaultVoiceSubId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        runCatching { SubscriptionManager.getDefaultVoiceSubscriptionId() }
+            .getOrDefault(SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+    } else {
+        SubscriptionManager.INVALID_SUBSCRIPTION_ID
+    }
+
+    return sims.sortedBy { it.simSlotIndex }.map { info ->
+        val slotIndex = info.simSlotIndex.coerceAtLeast(0)
+        val slotSelection = if (slotIndex == 1) USSD_SIM_SELECTION_SLOT_2 else USSD_SIM_SELECTION_SLOT_1
+        val boundTm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            runCatching { baseTm?.createForSubscriptionId(info.subscriptionId) }.getOrNull()
+        } else {
+            null
+        }
+        val simOperatorNumeric = runCatching { boundTm?.simOperator }.getOrNull().orEmpty().trim()
+            .ifBlank {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val mcc = info.mccString?.trim().orEmpty()
+                    val mnc = info.mncString?.trim().orEmpty()
+                    if (mcc.isNotBlank() && mnc.isNotBlank()) "$mcc$mnc" else ""
+                } else ""
+            }
+        val carrierLabel = runCatching { boundTm?.simOperatorName }.getOrNull().orEmpty().trim()
+            .ifBlank { info.carrierName?.toString()?.trim().orEmpty() }
+            .ifBlank { info.displayName?.toString()?.trim().orEmpty() }
+        LiveMenuSimCandidate(
+            slotSelection = slotSelection,
+            slotIndex = slotIndex,
+            subId = info.subscriptionId,
+            simOperatorNumeric = simOperatorNumeric,
+            carrierLabel = carrierLabel,
+            isDefaultVoice = defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID &&
+                info.subscriptionId == defaultVoiceSubId
+        )
+    }
+}
+
 internal fun shouldBlockLiveMenuForNativeSession(
     forceManual: Boolean,
     requestUnresolved: Boolean,
-    sessionMayBePending: Boolean
-): Boolean = requestUnresolved || (!forceManual && sessionMayBePending)
+    sessionMayBePending: Boolean,
+    targetSubId: Int? = null,
+    lastFailureSubId: Int? = null
+): Boolean {
+    if (requestUnresolved) return true
+    if (forceManual) return false
+    if (!sessionMayBePending) return false
+    if (targetSubId != null && lastFailureSubId != null && targetSubId != lastFailureSubId) {
+        return false
+    }
+    return true
+}
 
 internal fun shouldAutoRefreshLiveMenu(
     state: SignatureLiveMenuState,
@@ -369,7 +551,16 @@ internal object SignatureLiveMenuCoordinator {
         selectedOfferId: Int,
         nowMs: Long = System.currentTimeMillis()
     ): Boolean {
-        if (!shouldAutoRefreshLiveMenu(_state.value, nowMs)) return false
+        val current = _state.value
+        val appContext = context.applicationContext
+        val liveMenuSim = SignatureStudioStore.liveMenuSim(appContext)
+        val sims = getAvailableSims(appContext, forceRefresh = false)
+        val routing = resolveLiveMenuSimRouting(resolveLiveMenuSimCandidates(appContext, sims), liveMenuSim)
+        val switchingAwayFromFailedSub = current.autoRefreshPausedByNativeFailure &&
+            routing.autoSwitchedFrom != null &&
+            routing.chosen != null &&
+            routing.chosen.subId != SilentUssdOptimized.lastFailureSubId()
+        if (!switchingAwayFromFailedSub && !shouldAutoRefreshLiveMenu(current, nowMs)) return false
         return refresh(context, offers, selectedOfferId, forceManual = false)
     }
 
@@ -388,57 +579,79 @@ internal object SignatureLiveMenuCoordinator {
         // shorter fallback, and never an interactive popup.
         val requestCode = resolveLiveMenuUssdRequest()
         val sourceSummary = "Fixed Safaricom Live Menu verification request"
-        // SIM selection belongs to the Live Menu workspace itself. Do not inherit
-        // the SIM attached to whichever offer happens to be selected for learning.
-        val selectedSim = liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
 
         val sims = getAvailableSims(appContext, forceRefresh = true)
+        val candidates = resolveLiveMenuSimCandidates(appContext, sims)
+        val routing = resolveLiveMenuSimRouting(candidates, liveMenuSim)
+        if (routing.autoSwitchedFrom != null && routing.chosen != null) {
+            SignatureStudioStore.setLiveMenuSim(appContext, routing.chosen.slotSelection)
+        }
+        val effectiveSelection = routing.chosen?.slotSelection
+            ?: liveMenuSim.takeUnless { it == OFFER_SIM_USE_GENERAL }
+
         val resolvedTarget = resolveUssdSimTargets(
             appContext,
-            selectionOverride = selectedSim,
+            selectionOverride = effectiveSelection,
             forceRefresh = true
         ).firstOrNull()
-        val matchedCarrier = resolvedTarget?.let { target ->
-            sims.firstOrNull { it.subscriptionId == target.subId }
-                ?.let { info ->
-                    val display = info.displayName?.toString()?.trim().orEmpty()
-                    if (display.isNotBlank()) display else null
-                }
-        }
+        val matchedCarrier = routing.chosen?.carrierLabel?.takeIf { it.isNotBlank() }
+            ?: resolvedTarget?.let { target ->
+                sims.firstOrNull { it.subscriptionId == target.subId }
+                    ?.let { info ->
+                        info.carrierName?.toString()?.trim()?.ifBlank { null }
+                            ?: info.displayName?.toString()?.trim()?.ifBlank { null }
+                    }
+            }
         val simDescription = resolvedTarget?.let {
             val carrierSuffix = matchedCarrier?.let { name -> " · $name" }.orEmpty()
             "SIM slot ${it.slotIndex + 1}$carrierSuffix (subscription ID redacted)"
         } ?: "No active SIM resolved for current selection"
-        val defaultVoiceSubId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            android.telephony.SubscriptionManager.getDefaultVoiceSubscriptionId()
-        } else {
-            android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID
-        }
-        val defaultVoiceInfo = sims.firstOrNull { it.subscriptionId == defaultVoiceSubId }
-        val recommendedSimSelection = if (
-            resolvedTarget != null &&
-            defaultVoiceSubId != android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID &&
-            resolvedTarget.subId != defaultVoiceSubId &&
-            defaultVoiceInfo != null
-        ) {
-            if (defaultVoiceInfo.simSlotIndex == 1) USSD_SIM_SELECTION_SLOT_2 else USSD_SIM_SELECTION_SLOT_1
-        } else null
-        val simAdvice = when {
-            resolvedTarget == null -> "No active SIM is currently resolved. Select an installed SIM slot and refresh."
-            recommendedSimSelection != null -> {
-                val recommendedSlot = if (recommendedSimSelection == USSD_SIM_SELECTION_SLOT_2) "SIM 2" else "SIM 1"
-                "The selected SIM is not Android's default voice SIM. Android's default voice SIM is $recommendedSlot; try it for carrier USSD routing."
-            }
-            defaultVoiceSubId == android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID ->
-                "Android has no default voice SIM selected. Choose a voice SIM in Android system settings if USSD requests fail."
-            else -> ""
-        }
+        val recommendedSimSelection = routing.recommendedSimSelection
+        val simAdvice = routing.simAdvice
         val carrierConfig = UssdHelper.describeSilentUssdCarrierConfig(appContext, resolvedTarget?.subId)
         val telephonyReadiness = UssdHelper.describeSilentUssdReadiness(
             appContext,
             resolvedTarget?.subId,
             resolvedTarget?.slotIndex
         )
+
+        val chosenCandidate = routing.chosen
+        if (chosenCandidate != null &&
+            isConfirmedNonSafaricomOperator(chosenCandidate.simOperatorNumeric, chosenCandidate.carrierLabel)
+        ) {
+            val nowWall = System.currentTimeMillis()
+            val operatorCode = chosenCandidate.simOperatorNumeric.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+            val wrongCarrierError = "Selected SIM slot ${chosenCandidate.slotIndex + 1} (${chosenCandidate.carrierLabel}$operatorCode) is not Safaricom. Live Menu executes Safaricom *180*5*2*0790993046# and requires an active Safaricom SIM."
+            val updated = synchronized(lock) {
+                requestInFlight = false
+                val next = reduceLiveMenuFailure(
+                    previous = _state.value.copy(
+                        simDescription = simDescription,
+                        telephonyReadiness = telephonyReadiness,
+                        carrierConfig = carrierConfig,
+                        sourceOfferName = "Live Menu verification",
+                        sourceSummary = sourceSummary,
+                        simAdvice = simAdvice,
+                        recommendedSimSelection = recommendedSimSelection
+                    ),
+                    error = wrongCarrierError,
+                    elapsedMs = 0L,
+                    requestStarted = false,
+                    completedAtWallMs = nowWall,
+                    callbackErrorCode = null
+                )
+                _state.value = next
+                next
+            }
+            UssdPerformanceDiagnostics.recordSilentSignatureMenuFailure(
+                error = wrongCarrierError,
+                elapsedMs = 0L,
+                requestStarted = false,
+                previousMenuRetained = updated.previousMenuRetained,
+                callbackErrorCode = null
+            )
+            return false
+        }
 
         val nowWall = System.currentTimeMillis()
         synchronized(lock) {
@@ -466,10 +679,13 @@ internal object SignatureLiveMenuCoordinator {
 
             val nativeRequestUnresolved = SilentUssdOptimized.isNativeRequestUnresolved()
             val nativeSessionMayBePending = SilentUssdOptimized.nativeSessionMayBePending()
+            val lastFailureSubId = SilentUssdOptimized.lastFailureSubId()
             if (shouldBlockLiveMenuForNativeSession(
                     forceManual = forceManual,
                     requestUnresolved = nativeRequestUnresolved,
-                    sessionMayBePending = nativeSessionMayBePending
+                    sessionMayBePending = nativeSessionMayBePending,
+                    targetSubId = resolvedTarget?.subId,
+                    lastFailureSubId = lastFailureSubId
                 )) {
                 val blockedMessage = if (nativeSessionMayBePending && !nativeRequestUnresolved) {
                     "Native USSD session may still be pending on Android — restart the phone or toggle airplane mode before refreshing."
@@ -533,7 +749,7 @@ internal object SignatureLiveMenuCoordinator {
                 context = appContext,
                 ussdCode = requestCode,
                 silentOnly = true,
-                subIdOverride = selectedSim,
+                subIdOverride = effectiveSelection,
                 preserveRawResponse = true,
                 onSuccess = { response ->
                     if (!callbackHandled.compareAndSet(false, true)) return@dialUssd

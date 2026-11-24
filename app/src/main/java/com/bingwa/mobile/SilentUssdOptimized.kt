@@ -45,6 +45,8 @@ object SilentUssdOptimized {
     @Volatile private var radioTelephonyCallback: Any? = null
     @Volatile private var lastFailureCategory: String? = null
     @Volatile private var lastFailureCode: Int? = null
+    @Volatile private var lastFailureSubId: Int? = null
+    @Volatile private var activeSubscriptionId: Int? = null
     private val mainThreadExecutor = Executor { runnable -> handler.post(runnable) }
     /**
      * True when the last native USSD failure was USSD_RETURN_FAILURE (-1) and the
@@ -117,10 +119,14 @@ object SilentUssdOptimized {
         UssdPerformanceDiagnostics.recordNativeRequestStarted(requestId)
         Log.d(TAG, "Starting native silent USSD request #$requestId on SDK ${Build.VERSION.SDK_INT}")
 
+        val selectedSubscriptionId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { telephonyManager.subscriptionId }.getOrNull()
+        } else null
         synchronized(this) {
             successCb = onSuccess
             failureCb = onFailure
             activeRequestId = requestId
+            activeSubscriptionId = selectedSubscriptionId
             timeoutNotifiedRequestId = 0L
             lastFailureCode = null
             armTimeout(requestId)
@@ -129,9 +135,6 @@ object SilentUssdOptimized {
 
         val dispatchStartedAt = UssdPerformanceDiagnostics.mark()
         UssdPerformanceDiagnostics.recordSilentTelephonySnapshot("PRE_DISPATCH", describeTelephonyRuntime(telephonyManager))
-        val selectedSubscriptionId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            runCatching { telephonyManager.subscriptionId }.getOrNull()
-        } else null
         val requestProfile = "chars=${code.length} digits=${code.count(Char::isDigit)} separators=${code.count { it == '*' }} " +
             "segments=${code.count { it == '*' }} startsWithStar=${code.startsWith('*')} endsWithHash=${code.endsWith('#')} " +
             "numericFieldLengths=${code.removePrefix("*").removeSuffix("#").split('*').joinToString(",") { it.length.toString() }} " +
@@ -208,6 +211,8 @@ object SilentUssdOptimized {
 
     fun lastFailureCode(): Int? = lastFailureCode
 
+    fun lastFailureSubId(): Int? = lastFailureSubId
+
     /**
      * True when the last native USSD failure was USSD_RETURN_FAILURE (-1) and the
      * Android-side MMI/USSD session may still be pending. Cleared on any success
@@ -226,6 +231,7 @@ object SilentUssdOptimized {
      */
     fun resetNativeSessionPending() {
         nativeSessionMayBePending = false
+        lastFailureSubId = null
         if (!isProcessing.get()) {
             activeRequestId = 0L
             timeoutNotifiedRequestId = 0L
@@ -317,7 +323,12 @@ object SilentUssdOptimized {
                         "outcome=failure failureCode=$failureCode"
                     )
                     Log.w(TAG, "onReceiveUssdResponseFailed for req #$requestId: failureCode=$failureCode")
-                    deliverFailure(requestId, describeSilentUssdFailureCode(failureCode), failureCode)
+                    deliverFailure(
+                        requestId,
+                        describeSilentUssdFailureCode(failureCode),
+                        failureCode,
+                        callbackSubscriptionId ?: selectedSubscriptionId
+                    )
                 }
             }, handler)
             null
@@ -576,9 +587,11 @@ object SilentUssdOptimized {
             successCb = null
             failureCb = null
             activeRequestId = 0L
+            activeSubscriptionId = null
             isProcessing.set(false)
             nativeSessionMayBePending = false
             lastFailureCode = null
+            lastFailureSubId = null
             c
         }
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -588,12 +601,18 @@ object SilentUssdOptimized {
         }
     }
 
-    private fun deliverFailure(requestId: Long, reason: String, failureCode: Int? = null) {
+    private fun deliverFailure(
+        requestId: Long,
+        reason: String,
+        failureCode: Int? = null,
+        failedSubId: Int? = activeSubscriptionId
+    ) {
         val outcome = when {
             reason.contains("timeout", ignoreCase = true) -> "APP_TIMEOUT_NO_CALLBACK"
             else -> "APP_FAILURE"
         }
         lastFailureCode = failureCode
+        lastFailureSubId = failedSubId ?: activeSubscriptionId
         lastFailureCategory = when (failureCode) {
             TelephonyManager.USSD_RETURN_FAILURE -> "ANDROID_GENERIC_FAILURE_CALLBACK"
             TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "ANDROID_TELEPHONY_SERVICE_UNAVAILABLE"
@@ -627,6 +646,7 @@ object SilentUssdOptimized {
             successCb = null
             failureCb = null
             activeRequestId = 0L
+            activeSubscriptionId = null
             isProcessing.set(false)
             c
         }

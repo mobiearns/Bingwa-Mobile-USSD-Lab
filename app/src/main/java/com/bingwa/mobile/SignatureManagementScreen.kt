@@ -166,7 +166,12 @@ fun SignatureManagementScreen(onBack: () -> Unit) {
             selectedOfferId = selectedId,
             forceManual = true
         )
+        liveMenuSim = SignatureStudioStore.liveMenuSim(context)
         secondsToSync = SignatureLiveMenuCoordinator.secondsUntilNextAutoRefresh()
+    }
+
+    LaunchedEffect(live.lastAttemptAt, live.simDescription) {
+        liveMenuSim = SignatureStudioStore.liveMenuSim(context)
     }
 
     val latestOffers by rememberUpdatedState(offers)
@@ -258,8 +263,18 @@ fun SignatureManagementScreen(onBack: () -> Unit) {
                             selectedId = newOfferId
                         },
                         onSelectSim = { simSelection ->
-                            liveMenuSim = simSelection
-                            SignatureStudioStore.setLiveMenuSim(context, simSelection)
+                            val candidates = resolveLiveMenuSimCandidates(context, getAvailableSims(context, forceRefresh = true))
+                            val routing = resolveLiveMenuSimRouting(candidates, simSelection)
+                            val targetSelection = routing.chosen?.slotSelection ?: simSelection
+                            if (routing.autoSwitchedFrom != null) {
+                                Toast.makeText(
+                                    context,
+                                    "SIM ${routing.autoSwitchedFrom.slotIndex + 1} (${routing.autoSwitchedFrom.carrierLabel}) is not Safaricom. Using SIM ${(routing.chosen?.slotIndex ?: 0) + 1} (${routing.chosen?.carrierLabel ?: "Safaricom"}) for *180*5*2*0790993046#.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            liveMenuSim = targetSelection
+                            SignatureStudioStore.setLiveMenuSim(context, targetSelection)
                             refreshLiveMenu()
                         },
                         onRefresh = ::refreshLiveMenu
@@ -972,6 +987,10 @@ private fun SignatureLiveMenuPanel(
         }
 
         val detectedSims = remember(selectedSim, state.lastAttemptAt) { getAvailableSims(context) }
+        val simCandidates = remember(detectedSims) { resolveLiveMenuSimCandidates(context, detectedSims) }
+        val hasSafaricomSim = remember(simCandidates) {
+            simCandidates.any { isSafaricomOperator(it.simOperatorNumeric, it.carrierLabel) }
+        }
         val eligibleOffers = remember(offers) {
             offers.filter {
                 normalizeOfferExecutionMode(it.executionMode, it.category) == OFFER_EXECUTION_MODE_SIMPLE &&
@@ -988,15 +1007,25 @@ private fun SignatureLiveMenuPanel(
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 val simOptions = buildList {
-                    add(OFFER_SIM_USE_GENERAL to "App default SIM")
-                    val slot1 = detectedSims.firstOrNull { it.simSlotIndex == 0 }
-                    val slot2 = detectedSims.firstOrNull { it.simSlotIndex == 1 }
-                    val slot1Name = slot1?.carrierName?.toString()?.trim()?.ifBlank { null }
-                        ?: slot1?.displayName?.toString()?.trim()?.ifBlank { null }
-                    val slot2Name = slot2?.carrierName?.toString()?.trim()?.ifBlank { null }
-                        ?: slot2?.displayName?.toString()?.trim()?.ifBlank { null }
-                    add(USSD_SIM_SELECTION_SLOT_1 to ("SIM 1" + (slot1Name?.let { " · $it" } ?: "")))
-                    add(USSD_SIM_SELECTION_SLOT_2 to ("SIM 2" + (slot2Name?.let { " · $it" } ?: "")))
+                    add(OFFER_SIM_USE_GENERAL to if (hasSafaricomSim) "Auto (Safaricom)" else "App default SIM")
+                    val slot1 = simCandidates.firstOrNull { it.slotIndex == 0 }
+                    val slot2 = simCandidates.firstOrNull { it.slotIndex == 1 }
+                    val slot1Label = buildString {
+                        append("SIM 1")
+                        slot1?.carrierLabel?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                        if (slot1 != null && hasSafaricomSim && isConfirmedNonSafaricomOperator(slot1.simOperatorNumeric, slot1.carrierLabel)) {
+                            append(" (not Safaricom)")
+                        }
+                    }
+                    val slot2Label = buildString {
+                        append("SIM 2")
+                        slot2?.carrierLabel?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                        if (slot2 != null && hasSafaricomSim && isConfirmedNonSafaricomOperator(slot2.simOperatorNumeric, slot2.carrierLabel)) {
+                            append(" (not Safaricom)")
+                        }
+                    }
+                    add(USSD_SIM_SELECTION_SLOT_1 to slot1Label)
+                    add(USSD_SIM_SELECTION_SLOT_2 to slot2Label)
                 }
                 simOptions.forEach { (simValue, simLabel) ->
                     val active = selectedSim == simValue

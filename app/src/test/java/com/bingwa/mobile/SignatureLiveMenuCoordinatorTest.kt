@@ -375,4 +375,70 @@ class SignatureLiveMenuCoordinatorTest {
         assertEquals("*180*5*2*0790993046#", resolveLiveMenuUssdRequest())
         assertNotEquals("*180#", resolveLiveMenuUssdRequest())
     }
+
+    @Test fun dualSimAutoRoutesFromAirtelDefaultVoiceSimToSafaricomAndNeverRecommendsAirtel() {
+        val safaricomSim1 = LiveMenuSimCandidate(
+            slotSelection = USSD_SIM_SELECTION_SLOT_1,
+            slotIndex = 0,
+            subId = 101,
+            simOperatorNumeric = "63902",
+            carrierLabel = "Safaricom",
+            isDefaultVoice = false
+        )
+        val airtelSim2 = LiveMenuSimCandidate(
+            slotSelection = USSD_SIM_SELECTION_SLOT_2,
+            slotIndex = 1,
+            subId = 202,
+            simOperatorNumeric = "63903",
+            carrierLabel = "Airtel KE",
+            isDefaultVoice = true
+        )
+
+        val autoFromGeneral = resolveLiveMenuSimRouting(
+            candidates = listOf(safaricomSim1, airtelSim2),
+            requestedSelection = OFFER_SIM_USE_GENERAL
+        )
+        assertEquals(safaricomSim1, autoFromGeneral.chosen)
+        assertEquals(null, autoFromGeneral.recommendedSimSelection)
+        assertEquals("", autoFromGeneral.simAdvice)
+
+        val autoFromSavedAirtel = resolveLiveMenuSimRouting(
+            candidates = listOf(safaricomSim1, airtelSim2),
+            requestedSelection = USSD_SIM_SELECTION_SLOT_2
+        )
+        assertEquals(safaricomSim1, autoFromSavedAirtel.chosen)
+        assertEquals(airtelSim2, autoFromSavedAirtel.autoSwitchedFrom)
+        assertEquals(null, autoFromSavedAirtel.recommendedSimSelection)
+        assertTrue(autoFromSavedAirtel.simAdvice.contains("Airtel KE"))
+        assertTrue(autoFromSavedAirtel.simAdvice.contains("Safaricom"))
+    }
+
+    @Test fun pendingFailureOnAirtelSubIdDoesNotBlockSafaricomSubId() {
+        assertFalse(
+            shouldBlockLiveMenuForNativeSession(
+                forceManual = false,
+                requestUnresolved = false,
+                sessionMayBePending = true,
+                targetSubId = 101,
+                lastFailureSubId = 202
+            )
+        )
+        assertTrue(
+            shouldBlockLiveMenuForNativeSession(
+                forceManual = false,
+                requestUnresolved = false,
+                sessionMayBePending = true,
+                targetSubId = 202,
+                lastFailureSubId = 202
+            )
+        )
+    }
+
+    @Test fun detectsSafaricomVsConfirmedNonSafaricomCarriers() {
+        assertTrue(isSafaricomOperator("63902", "SIM 1"))
+        assertTrue(isSafaricomOperator("", "Safaricom"))
+        assertFalse(isSafaricomOperator("63903", "Airtel KE"))
+        assertTrue(isConfirmedNonSafaricomOperator("63903", "Airtel KE"))
+        assertFalse(isConfirmedNonSafaricomOperator("", "SIM 1"))
+    }
 }
