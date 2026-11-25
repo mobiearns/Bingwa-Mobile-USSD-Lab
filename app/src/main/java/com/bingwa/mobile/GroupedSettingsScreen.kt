@@ -5,6 +5,7 @@ import com.bingwa.mobile.ui.fallback.SavedFallbackUi
 import com.bingwa.mobile.ui.fallback.SavedFallbackCard
 import com.bingwa.mobile.ui.fallback.FallbackTab
 import com.bingwa.mobile.ui.fallback.FallbackTabs
+import com.bingwa.mobile.experimental.ExperimentalInternalUssdScreen
 
 import android.Manifest
 import android.content.Context
@@ -177,6 +178,7 @@ private sealed class SettingsDest {
     data object BalanceAlarms : SettingsDest()
     data object Transactions : SettingsDest()
     data object Diagnostics : SettingsDest()
+    data object InternalUssdExperiment : SettingsDest()
     data object SmsCentre : SettingsDest()
 }
 
@@ -218,6 +220,7 @@ fun GroupedSettingsScreen(
             onOpenBalanceAlarms = { dest = SettingsDest.BalanceAlarms },
             onOpenTransactions = onOpenHistory,
             onOpenDiagnostics = { dest = SettingsDest.Diagnostics },
+            onOpenInternalUssdExperiment = { dest = SettingsDest.InternalUssdExperiment },
             onOpenSmsCentre = onOpenSmsCentre
         )
         SettingsDest.Sim -> SimSettings(onBack = { dest = SettingsDest.Home })
@@ -236,6 +239,7 @@ fun GroupedSettingsScreen(
         SettingsDest.BalanceAlarms -> BalanceAlarmSettingsPage(onBack = { dest = SettingsDest.Home })
         SettingsDest.Transactions -> TransactionSettings(onBack = { dest = SettingsDest.Home })
         SettingsDest.Diagnostics -> DeviceDiagnosticsScreen(onBack = { dest = SettingsDest.Home })
+        SettingsDest.InternalUssdExperiment -> ExperimentalInternalUssdScreen(onBack = { dest = SettingsDest.Home })
         SettingsDest.SmsCentre -> SmsCentreScreen(onBack = { dest = SettingsDest.Home })
     }
 }
@@ -258,6 +262,7 @@ private fun SettingsHome(
     onOpenBalanceAlarms: () -> Unit,
     onOpenTransactions: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenInternalUssdExperiment: () -> Unit,
     onOpenSmsCentre: () -> Unit
 ) {
     val ctx = LocalContext.current
@@ -353,6 +358,8 @@ private fun SettingsHome(
                         ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     }
                 }
+                GroupDivider(C.amber)
+                LinkRow(Icons.Rounded.Bolt, "Experimental: ITelephony USSD", "Isolated ResultReceiver test for *180*5*2*0790993046#", C.cyan, onOpenInternalUssdExperiment)
                 GroupDivider(C.amber)
                 LinkRow(Icons.Filled.Block, "Blacklist", "Block phone numbers from receiving automated bundles", C.red, onOpenBlacklist)
             }
