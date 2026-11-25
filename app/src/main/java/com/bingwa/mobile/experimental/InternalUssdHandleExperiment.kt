@@ -152,7 +152,8 @@ internal fun describeHiddenApiPolicy(
 
 internal fun describeResultCode(code: Int?): String = when (code) {
     null -> "NONE (no ResultReceiver callback)"
-    TelephonyManager.USSD_RETURN_SUCCESS -> "0 (USSD_RETURN_SUCCESS)"
+    100 -> "100 (USSD_RETURN_SUCCESS)"
+    0 -> "0 (framework result 0)"
     TelephonyManager.USSD_RETURN_FAILURE -> "-1 (USSD_RETURN_FAILURE)"
     TelephonyManager.USSD_ERROR_SERVICE_UNAVAIL -> "-2 (USSD_ERROR_SERVICE_UNAVAIL)"
     -3 -> "-3 (USSD_ERROR_NOT_ALLOWED / disallowed by carrier or permission)"

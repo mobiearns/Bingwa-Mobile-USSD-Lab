@@ -64,7 +64,7 @@ class InternalUssdHandleExperimentTest {
     @Test
     fun resultCodeLabelsCoverMinusOneAndSuccess() {
         assertTrue(describeResultCode(-1).contains("USSD_RETURN_FAILURE"))
-        assertTrue(describeResultCode(0).contains("USSD_RETURN_SUCCESS"))
+        assertTrue(describeResultCode(100).contains("USSD_RETURN_SUCCESS"))
         assertTrue(describeResultCode(null).contains("NONE"))
     }
 
